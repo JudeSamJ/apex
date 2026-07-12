@@ -13,6 +13,7 @@ from app.cards.models import Card
 from app.transactions.models import Transaction
 from app.ledger.client import LedgerClient
 from app.transactions.tasks import process_settlement
+from app.transactions.pipeline_events import emit_pipeline_event
 
 router = APIRouter(prefix="/api/transactions", tags=["transactions"])
 
@@ -108,8 +109,19 @@ def simulate_swipe(
     if card.status == "FROZEN":
         return decline("Card is frozen")
 
-    # 3. Check Card Limit (calculate current cycle spend)
-    # Simple check: sum active spend (HELD or SETTLED) for this card
+    # 3. Check Spend Program limits (policy-driven, not hardcoded card-only)
+    program = card.spend_program
+    program_cycle_spend = db.query(func.sum(Transaction.amount)).join(
+        Card, Transaction.card_id == Card.id
+    ).filter(
+        Card.spend_program_id == program.id,
+        Transaction.status.in_(["HELD", "SETTLED"])
+    ).scalar() or Decimal("0.0000")
+
+    if program_cycle_spend + swipe.amount > program.limit_amount:
+        return decline("Exceeds spend program limit")
+
+    # 4. Check card-level limit (card limit must be <= program limit)
     current_cycle_spend = db.query(func.sum(Transaction.amount)).filter(
         Transaction.card_id == card.id,
         Transaction.status.in_(["HELD", "SETTLED"])
@@ -118,7 +130,11 @@ def simulate_swipe(
     if current_cycle_spend + swipe.amount > card.limit_amount:
         return decline("Exceeds card limit")
 
-    # 4. Success Path - Authorize (HELD)
+    # 5. Check allowed MCC categories on spend program
+    if program.allowed_mcc and swipe.merchant_mcc not in program.allowed_mcc:
+        return decline("Merchant category not allowed by spend program")
+
+    # 6. Success Path - Authorize (HELD)
     transaction_id = str(uuid.uuid4())
     idempotency_key = f"hold_{transaction_id}"
     
@@ -152,6 +168,7 @@ def simulate_swipe(
         status="HELD"
     )
     db.add(tx)
+    emit_pipeline_event(db, card.entity_id, transaction_id, "hold_created", transaction_id)
     db.commit()
 
     # Trigger async settlement task via Celery

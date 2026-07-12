@@ -27,3 +27,14 @@ class Transaction(Base):
     entity = relationship("Entity")
     department = relationship("Department")
     card = relationship("Card")
+
+
+class PipelineEvent(Base):
+    __tablename__ = "pipeline_events"
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    entity_id = Column(String(36), ForeignKey("entities.id"), nullable=False)
+    transaction_id = Column(String(36), ForeignKey("transactions.id"), nullable=False)
+    event_type = Column(String(50), nullable=False)
+    source_event_id = Column(String(36), nullable=False)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)

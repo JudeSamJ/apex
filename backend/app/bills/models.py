@@ -33,6 +33,10 @@ class VendorBankAccount(Base):
     entity_id = Column(String(36), ForeignKey("entities.id"), nullable=False)
     vendor_id = Column(String(36), ForeignKey("vendors.id", ondelete="CASCADE"), nullable=False)
     masked_account_ref = Column(String(255), nullable=False)  # token representing banking detail
+    # Plaid-specific fields for real bank account linking
+    plaid_access_token = Column(String(255), nullable=True)
+    plaid_item_id = Column(String(255), nullable=True)
+    plaid_account_id = Column(String(255), nullable=True)
 
     entity = relationship("Entity")
     vendor = relationship("Vendor")

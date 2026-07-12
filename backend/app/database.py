@@ -27,9 +27,9 @@ def init_db():
     
     # Import all models to register them on Base
     from app.entities_rbac.models import Entity, Department, Location, User, Role, UserRole
-    from app.ledger.models import LedgerEntry
+    from app.ledger.models import LedgerEntry, BalanceSnapshot
     from app.cards.models import SpendProgram, Card, CardRequest
-    from app.transactions.models import Transaction
+    from app.transactions.models import Transaction, PipelineEvent
     from app.approvals.models import Approval, ApprovalStep, ApprovalRule
     from app.bills.models import Vendor, VendorContact, VendorBankAccount, Bill, BillLineItem, BillPayment
     from app.reimbursements.models import Reimbursement, ReimbursementLineItem, MileageTrip, TripWaypoint

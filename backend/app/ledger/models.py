@@ -34,3 +34,14 @@ class LedgerEntry(Base):
     source_event_id = Column(String(36), nullable=False)
     idempotency_key = Column(String(255), nullable=False)
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+
+class BalanceSnapshot(Base):
+    """Running balance per entity, updated transactionally on each posting."""
+    __tablename__ = "balance_snapshots"
+    __table_args__ = {"schema": "ledger"}
+
+    entity_id = Column(String(36), primary_key=True)
+    balance = Column(Numeric(18, 4), nullable=False, default=0)
+    currency = Column(String(3), nullable=False, default="USD")
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow)

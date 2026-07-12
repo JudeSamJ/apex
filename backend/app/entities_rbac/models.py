@@ -16,6 +16,9 @@ class Entity(Base):
     name = Column(String(255), nullable=False)
     onboarding_status = Column(String(50), nullable=False, default=OnboardingStatus.PENDING.value)
     parent_entity_id = Column(String(36), ForeignKey("entities.id"), nullable=True)
+    # KYC/KYB verification fields
+    verification_id = Column(String(255), nullable=True)
+    verification_url = Column(String(500), nullable=True)
 
     parent = relationship("Entity", remote_side=[id], backref="subsidiaries")
 

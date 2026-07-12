@@ -13,6 +13,7 @@ class GLAccount(Base):
     name = Column(String(255), nullable=False)
     type = Column(String(50), nullable=False)  # ASSET, LIABILITY, EXPENSE, REVENUE
     is_active = Column(Boolean, nullable=False, default=True)
+    external_id = Column(String(255), nullable=True)  # External ERP system ID (e.g., QBO account ID)
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
 
     entity = relationship("Entity")
@@ -55,5 +56,20 @@ class AccountingCustomField(Base):
     field_type = Column(String(20), nullable=False)  # TEXT, SELECT
     select_options = Column(JSON, nullable=True)  # List of strings for SELECT field
     is_required = Column(Boolean, nullable=False, default=False)
+
+    entity = relationship("Entity")
+
+
+class ERPConnection(Base):
+    __tablename__ = "erp_connections"
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    entity_id = Column(String(36), ForeignKey("entities.id"), nullable=False)
+    provider = Column(String(50), nullable=False)  # QBO, NETSUITE, XERO
+    access_token = Column(String(500), nullable=False)
+    refresh_token = Column(String(500), nullable=True)
+    realm_id = Column(String(255), nullable=True)  # QBO specific
+    expires_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
 
     entity = relationship("Entity")

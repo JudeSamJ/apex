@@ -13,6 +13,7 @@ class SpendProgram(Base):
     limit_amount = Column(Numeric(18, 4), nullable=False)
     limit_type = Column(String(50), nullable=False)  # MONTHLY, YEARLY, ONETIME
     allowed_mcc = Column(JSON, nullable=True)  # List of allowed MCC codes, e.g. ["5812", "5411"] or null for all
+    approval_threshold = Column(Numeric(18, 4), nullable=True)  # Txns above this amount require approval
 
     entity = relationship("Entity")
 

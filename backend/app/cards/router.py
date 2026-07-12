@@ -7,11 +7,11 @@ from decimal import Decimal
 from app.database import get_db
 from app.entities_rbac.auth import get_current_user_context, UserContext
 from app.cards.models import SpendProgram, Card, CardRequest
-from app.cards.partner_client import MockIssuingPartnerClient
+from app.cards.partner_client import get_issuing_client
 from app.approvals.engine import ApprovalEngine
 
 router = APIRouter(prefix="/api/cards", tags=["cards"])
-partner_client = MockIssuingPartnerClient()
+partner_client = get_issuing_client()
 
 class SpendProgramCreate(BaseModel):
     name: str

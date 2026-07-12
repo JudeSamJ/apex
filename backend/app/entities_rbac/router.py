@@ -1,3 +1,5 @@
+import os
+import logging
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
@@ -14,6 +16,7 @@ from app.entities_rbac.auth import (
     get_current_user_context,
     UserContext
 )
+from app.kyc.client import get_didit_client
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
@@ -55,13 +58,41 @@ def register(user_in: UserRegister, db: Session = Depends(get_db)):
             db.add(Role(id=role_id, name=role_id.replace("_", " ").title()))
     db.commit()
 
-    # Create Entity
+    # Create Entity with pending onboarding status
     entity = Entity(
         name=user_in.entity_name,
-        onboarding_status=OnboardingStatus.APPROVED.value
+        onboarding_status=OnboardingStatus.PENDING.value
     )
     db.add(entity)
     db.flush()
+
+    # Trigger KYC/KYB verification via Didit
+    try:
+        didit_client = get_didit_client()
+        verification = didit_client.create_verification(
+            entity_id=entity.id,
+            entity_name=entity.name,
+            entity_type="business",  # Default to business for B2B platform
+            email=user_in.email
+        )
+        
+        # Store verification ID on entity
+        entity.verification_id = verification["verification_id"]
+        entity.verification_url = verification.get("verification_url")
+        
+        # For demo/sandbox mode, auto-approve after verification creation
+        # In production, this would wait for webhook callback
+        if os.getenv("AUTO_APPROVE_ONBOARDING", "False").lower() in ["true", "1"]:
+            entity.onboarding_status = OnboardingStatus.APPROVED.value
+        
+        db.commit()
+        
+    except Exception as e:
+        # Log error but don't fail registration - entity stays in PENDING
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.error(f"Failed to create Didit verification: {e}")
+        db.commit()
 
     # Create User
     user = User(
