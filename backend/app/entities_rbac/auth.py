@@ -93,6 +93,42 @@ def decode_mfa_challenge_token(token: str) -> str:
 
     return user_id
 
+PASSWORD_RESET_EXPIRE_MINUTES = 30
+
+def create_password_reset_token(user_id: str, current_password_hash: str) -> str:
+    """A short-lived, single-purpose token for POST /auth/reset-password.
+
+    Binds a fingerprint of the password hash at issuance time into the
+    token: resetting the password changes that hash, so the same link can
+    never be replayed, and any earlier unused links are invalidated the
+    moment a reset (or another reset) succeeds — no separate token-store
+    table needed to get single-use semantics.
+    """
+    return create_access_token(
+        data={"sub": user_id, "purpose": "password_reset", "pwfp": current_password_hash[-16:]},
+        expires_delta=timedelta(minutes=PASSWORD_RESET_EXPIRE_MINUTES)
+    )
+
+def decode_password_reset_token(token: str, current_password_hash: str) -> str:
+    """Decode a password reset token and return the user_id, or raise 400."""
+    invalid_exception = HTTPException(
+        status_code=status.HTTP_400_BAD_REQUEST,
+        detail="This reset link is invalid or has expired. Request a new one."
+    )
+    try:
+        payload = jwt.decode(token, JWT_SECRET, algorithms=[ALGORITHM])
+    except JWTError:
+        raise invalid_exception
+
+    if payload.get("purpose") != "password_reset":
+        raise invalid_exception
+
+    user_id = payload.get("sub")
+    if not user_id or payload.get("pwfp") != current_password_hash[-16:]:
+        raise invalid_exception
+
+    return user_id
+
 class UserContext:
     def __init__(
         self,

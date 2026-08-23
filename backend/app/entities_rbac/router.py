@@ -15,9 +15,15 @@ from app.entities_rbac.auth import (
     create_access_token,
     create_mfa_challenge_token,
     decode_mfa_challenge_token,
+    create_password_reset_token,
+    decode_password_reset_token,
     get_current_user_context,
     UserContext
 )
+from app.notifications.client import get_email_client
+
+logger = logging.getLogger(__name__)
+
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
 class UserRegister(BaseModel):
@@ -65,6 +71,13 @@ class MfaCodeIn(BaseModel):
 class MfaVerifyLoginIn(BaseModel):
     challenge_token: str
     code: str
+
+class ForgotPasswordIn(BaseModel):
+    email: EmailStr
+
+class ResetPasswordIn(BaseModel):
+    token: str
+    new_password: str
 
 class UserRoleOut(BaseModel):
     role_id: str
@@ -227,6 +240,63 @@ def mfa_verify_login(body: MfaVerifyLoginIn, db: Session = Depends(get_db)):
 
     access_token = create_access_token(data={"sub": user.id})
     return {"access_token": access_token, "token_type": "bearer"}
+
+@router.post("/forgot-password")
+def forgot_password(body: ForgotPasswordIn, db: Session = Depends(get_db)):
+    """Always returns the same generic message whether or not the email is
+    registered — enumerating valid accounts to an anonymous caller is its
+    own vulnerability. If the account exists, a reset link is emailed."""
+    from app.rate_limit import check_rate_limit
+    check_rate_limit(user_id=body.email, endpoint="forgot_password", limit=5, window_seconds=900)
+
+    generic_response = {"message": "If an account exists for that email, a password reset link has been sent."}
+
+    user = db.query(User).filter(User.email == body.email).first()
+    if not user:
+        return generic_response
+
+    reset_token = create_password_reset_token(user.id, user.password_hash)
+    frontend_base = os.getenv("FRONTEND_BASE_URL", "http://localhost:5173")
+    reset_link = f"{frontend_base}/?reset_token={reset_token}"
+
+    try:
+        get_email_client().send(
+            to=user.email,
+            subject="Reset your Apex password",
+            body=f"Someone requested a password reset for your Apex account. This link expires in 30 minutes:\n\n{reset_link}\n\nIf you didn't request this, you can ignore this email."
+        )
+    except Exception as e:
+        logger.warning(f"Failed to send password reset email to {user.email}: {e}")
+
+    return generic_response
+
+@router.post("/reset-password")
+def reset_password(body: ResetPasswordIn, db: Session = Depends(get_db)):
+    from app.rate_limit import check_rate_limit
+    check_rate_limit(user_id=body.token[:32], endpoint="reset_password", limit=10, window_seconds=900)
+
+    if len(body.new_password) < 8:
+        raise HTTPException(status_code=400, detail="Password must be at least 8 characters")
+
+    # The token embeds a fingerprint of the password hash at issuance time —
+    # decode against every user isn't possible without knowing who first, so
+    # peek at the unverified payload's `sub` just to load the row, then let
+    # decode_password_reset_token do the real signature+fingerprint check.
+    from jose import jwt as _jwt
+    try:
+        unverified = _jwt.get_unverified_claims(body.token)
+    except Exception:
+        raise HTTPException(status_code=400, detail="This reset link is invalid or has expired. Request a new one.")
+
+    user = db.query(User).filter(User.id == unverified.get("sub")).first()
+    if not user:
+        raise HTTPException(status_code=400, detail="This reset link is invalid or has expired. Request a new one.")
+
+    decode_password_reset_token(body.token, user.password_hash)
+
+    user.password_hash = get_password_hash(body.new_password)
+    db.commit()
+    return {"message": "Password reset. You can now sign in with your new password."}
 
 @router.get("/me", response_model=UserMeOut)
 def get_me(current_user: UserContext = Depends(get_current_user_context), db: Session = Depends(get_db)):

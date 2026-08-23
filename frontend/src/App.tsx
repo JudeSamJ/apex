@@ -402,6 +402,16 @@ export default function App() {
   const [registerMessage, setRegisterMessage] = useState<string | null>(null);
   const [registerError, setRegisterError] = useState<string | null>(null);
 
+  // Forgot / reset password state
+  const [showForgotPassword, setShowForgotPassword] = useState<boolean>(false);
+  const [forgotEmail, setForgotEmail] = useState<string>('');
+  const [forgotMessage, setForgotMessage] = useState<string | null>(null);
+  const [forgotError, setForgotError] = useState<string | null>(null);
+  const [resetToken, setResetToken] = useState<string | null>(null);
+  const [resetNewPassword, setResetNewPassword] = useState<string>('');
+  const [resetMessage, setResetMessage] = useState<string | null>(null);
+  const [resetError, setResetError] = useState<string | null>(null);
+
   // Admin: pending user registrations awaiting approval
   const [pendingUsers, setPendingUsers] = useState<PendingUser[]>([]);
   const [pendingApproveRole, setPendingApproveRole] = useState<Record<string, string>>({});
@@ -634,6 +644,8 @@ export default function App() {
     setMfaChallengeToken(null);
     setPendingUsers([]);
     setShowRegister(false);
+    setShowForgotPassword(false);
+    setResetToken(null);
   };
 
   const handleLogin = async (e: React.FormEvent) => {
@@ -743,6 +755,59 @@ export default function App() {
       }
     })();
   }, []);
+
+  // Detects a password-reset link (?reset_token=...) landing on the SPA and
+  // switches straight to the "set a new password" screen.
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const token = params.get('reset_token');
+    if (!token) return;
+    setResetToken(token);
+    window.history.replaceState({}, '', window.location.pathname);
+  }, []);
+
+  const handleForgotPassword = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setForgotError(null);
+    setForgotMessage(null);
+    setLoading(true);
+    try {
+      const res = await fetch(`${API_BASE}/api/auth/forgot-password`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: forgotEmail })
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.detail || 'Failed to request password reset');
+      setForgotMessage(data.message || 'If an account exists for that email, a reset link has been sent.');
+    } catch (err: any) {
+      setForgotError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleResetPassword = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setResetError(null);
+    setResetMessage(null);
+    setLoading(true);
+    try {
+      const res = await fetch(`${API_BASE}/api/auth/reset-password`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token: resetToken, new_password: resetNewPassword })
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.detail || 'Failed to reset password');
+      setResetMessage(data.message || 'Password reset. You can now sign in.');
+      setResetNewPassword('');
+    } catch (err: any) {
+      setResetError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  };
 
   const handleQuickLogin = (email: string) => {
     setEmailInput(email);
@@ -1871,7 +1936,87 @@ export default function App() {
             <h1 style={{ fontSize: '1.75rem', fontWeight: 800, fontFamily: 'Outfit', letterSpacing: '0.05em' }}>APEX PORTAL</h1>
           </div>
           
-          {showRegister ? (
+          {resetToken ? (
+            <form onSubmit={handleResetPassword} style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
+              {resetError && (
+                <div style={{ color: 'var(--color-danger)', fontSize: '0.9rem', display: 'flex', gap: '0.25rem', alignItems: 'center' }}>
+                  <ShieldAlert size={16} />
+                  <span>{resetError}</span>
+                </div>
+              )}
+              {resetMessage ? (
+                <>
+                  <div style={{ color: 'var(--color-success)', fontSize: '0.9rem' }}>{resetMessage}</div>
+                  <button
+                    type="button"
+                    className="btn btn-primary"
+                    style={{ width: '100%' }}
+                    onClick={() => { setResetToken(null); setResetMessage(null); }}
+                  >
+                    Back to Sign In
+                  </button>
+                </>
+              ) : (
+                <>
+                  <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>Choose a new password for your account.</p>
+                  <div>
+                    <label>New Password</label>
+                    <input
+                      type="password"
+                      value={resetNewPassword}
+                      onChange={(e) => setResetNewPassword(e.target.value)}
+                      required
+                      minLength={8}
+                    />
+                  </div>
+                  <button type="submit" className="btn btn-primary" style={{ width: '100%' }}>
+                    Reset Password
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn-secondary"
+                    style={{ width: '100%' }}
+                    onClick={() => { setResetToken(null); setResetError(null); }}
+                  >
+                    Cancel
+                  </button>
+                </>
+              )}
+            </form>
+          ) : showForgotPassword ? (
+            <form onSubmit={handleForgotPassword} style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
+              {forgotError && (
+                <div style={{ color: 'var(--color-danger)', fontSize: '0.9rem', display: 'flex', gap: '0.25rem', alignItems: 'center' }}>
+                  <ShieldAlert size={16} />
+                  <span>{forgotError}</span>
+                </div>
+              )}
+              {forgotMessage ? (
+                <div style={{ color: 'var(--color-success)', fontSize: '0.85rem' }}>{forgotMessage}</div>
+              ) : (
+                <>
+                  <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
+                    Enter your email and we'll send a link to reset your password.
+                  </p>
+                  <div>
+                    <label>Email</label>
+                    <input type="email" value={forgotEmail} onChange={(e) => setForgotEmail(e.target.value)} required />
+                  </div>
+                  <button type="submit" className="btn btn-primary" style={{ width: '100%' }}>
+                    Send Reset Link
+                  </button>
+                </>
+              )}
+              <button
+                type="button"
+                className="btn btn-secondary"
+                style={{ width: '100%' }}
+                onClick={() => { setShowForgotPassword(false); setForgotMessage(null); setForgotError(null); setForgotEmail(''); }}
+              >
+                Back to Sign In
+              </button>
+            </form>
+          ) : showRegister ? (
             <form onSubmit={handleRegister} style={{ display: 'flex', flexDirection: 'column', gap: '1.1rem' }}>
               {registerError && (
                 <div style={{ color: 'var(--color-danger)', fontSize: '0.9rem', display: 'flex', gap: '0.25rem', alignItems: 'center' }}>
@@ -1999,18 +2144,28 @@ export default function App() {
             <button type="submit" className="btn btn-primary" style={{ width: '100%', marginTop: '0.5rem' }}>
               Sign In
             </button>
-            <button
-              type="button"
-              className="btn btn-secondary"
-              style={{ width: '100%', fontSize: '0.85rem' }}
-              onClick={() => { setShowRegister(true); setErrorMessage(null); }}
-            >
-              Create an account
-            </button>
+            <div style={{ display: 'flex', gap: '0.5rem' }}>
+              <button
+                type="button"
+                className="btn btn-secondary"
+                style={{ flex: 1, fontSize: '0.85rem' }}
+                onClick={() => { setShowRegister(true); setErrorMessage(null); }}
+              >
+                Create an account
+              </button>
+              <button
+                type="button"
+                className="btn btn-secondary"
+                style={{ flex: 1, fontSize: '0.85rem' }}
+                onClick={() => { setShowForgotPassword(true); setErrorMessage(null); }}
+              >
+                Forgot password?
+              </button>
+            </div>
           </form>
           )}
 
-          {!mfaChallengeToken && !showRegister && (
+          {!mfaChallengeToken && !showRegister && !showForgotPassword && !resetToken && (
           <div style={{ marginTop: '1.5rem', borderTop: '1px solid var(--border-color)', paddingTop: '1.25rem' }}>
             <form onSubmit={handleSsoLogin} style={{ display: 'flex', gap: '0.5rem' }}>
               <input
@@ -2031,7 +2186,7 @@ export default function App() {
           </div>
           )}
 
-          {!mfaChallengeToken && !showRegister && (
+          {!mfaChallengeToken && !showRegister && !showForgotPassword && !resetToken && (
           <div style={{ marginTop: '2rem', borderTop: '1px solid var(--border-color)', paddingTop: '1.5rem' }}>
             <p style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', marginBottom: '0.75rem', textAlign: 'center' }}>
               Quick Switch Role Profiles
