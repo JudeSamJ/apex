@@ -1,5 +1,5 @@
 import os
-from sqlalchemy import create_engine, text, event
+from sqlalchemy import create_engine, event
 from sqlalchemy.orm import declarative_base, sessionmaker
 from app.secrets.provider import get_secret
 
@@ -33,33 +33,20 @@ if DATABASE_URL.startswith("sqlite"):
         cursor.close()
 
 def init_db():
-    with engine.begin() as conn:
-        if not DATABASE_URL.startswith("sqlite"):
-            conn.execute(text("CREATE SCHEMA IF NOT EXISTS public;"))
-            conn.execute(text("CREATE SCHEMA IF NOT EXISTS ledger;"))
-    
-    # Import all models to register them on Base
-    from app.entities_rbac.models import Entity, Department, Location, User, Role, UserRole
-    from app.ledger.models import LedgerEntry, BalanceSnapshot
-    from app.cards.models import SpendProgram, Card, CardRequest
-    from app.transactions.models import Transaction, PipelineEvent, TransactionReceipt
-    from app.approvals.models import Approval, ApprovalStep, ApprovalRule
-    from app.bills.models import Vendor, VendorContact, VendorBankAccount, Bill, BillLineItem, BillPayment
-    from app.reimbursements.models import Reimbursement, ReimbursementLineItem, MileageTrip, TripWaypoint
-    from app.accounting.models import GLAccount, GLMapping, SyncQueue, AccountingCustomField
-    from app.insights.models import MerchantNormalization, Insight
-    from app.reporting.models import Budget
-    from app.audit_logs.models import AuditLog
-    from app.jobs.models import BackgroundJob
-    from app.idempotency.models import IdempotencyKey
-    from app.screening.models import SanctionsScreening
-    from app.disputes.models import CardDispute
-    from app.reconciliation.models import ReconciliationRun, ReconciliationDiscrepancy
-    from app.notifications.models import Notification
-    from app.sso.models import SSOConnection
-    
-    # Create tables
-    Base.metadata.create_all(bind=engine)
+    """Bring the database schema up to date by applying every pending
+    Alembic migration (backend/alembic/versions/) — the single source of
+    truth for schema changes now, in place of the old Base.metadata.create_all()
+    (which could only ever add brand-new tables, never alter an existing
+    one, making every real schema change a manual DB wipe in practice).
+
+    Safe to call on every app startup: a DB already at head is a no-op.
+    """
+    from alembic.config import Config
+    from alembic import command
+
+    backend_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    alembic_cfg = Config(os.path.join(backend_dir, "alembic.ini"))
+    command.upgrade(alembic_cfg, "head")
 
 def get_db():
     db = SessionLocal()

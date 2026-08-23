@@ -80,6 +80,14 @@ New env vars: `USE_REAL_FX`, `EXCHANGE_RATE_API_KEY` (optional, default off/mock
 
 New env vars: `SECRETS_PROVIDER`, `VAULT_ADDR`, `VAULT_TOKEN`, `VAULT_KV_MOUNT`, `VAULT_SECRET_PATH`, `VAULT_CACHE_TTL_SECONDS` (all optional, default to plain env vars / no Vault).
 
+### Database schema migrations (this pass)
+
+- **Replaced `Base.metadata.create_all()` with real Alembic migrations** (`backend/alembic/`). `create_all()` can only ever add brand-new tables — it silently does nothing on an existing table whose columns have changed, which is exactly how a stale-schema mismatch reaches a real database unnoticed. Every schema change now goes through a tracked, reviewable migration file instead.
+- A single **baseline migration** (`c366a4854cbc_baseline_schema.py`) captures the full current schema — every table across every module, including the `ledger` schema (`ledger_entries`, `balance_snapshots`) — generated via `alembic revision --autogenerate` against a clean database and verified with `alembic check` (zero drift against the live models).
+- `init_db()` (called on every app startup, unchanged call site in `main.py`) now runs `alembic upgrade head` instead of `create_all()` — a fresh database gets the full schema on first boot with no extra step, and a database already at head is a no-op, so this stays as zero-setup for local dev as it was before.
+- Works against both dialects this app supports: **SQLite** (via the same `ATTACH DATABASE` trick `database.py` already used for the `ledger` schema, replicated in `alembic/env.py`) and **Postgres** (via `include_schemas=True` so `ledger`-schema tables are tracked correctly, and `CREATE SCHEMA IF NOT EXISTS` before the first migration runs). Verified end-to-end against a real local Postgres 16 instance: fresh-DB migration, idempotent re-run, and a full seed → login → cards → pending-users smoke pass.
+- **For an already-running deployment** (e.g. a Neon database that was created before this change, back when `create_all()` populated it): run `alembic stamp head` once against it instead of `alembic upgrade head` — it already has the baseline schema, `stamp` just tells Alembic that without trying to re-create anything. Every migration after that applies normally.
+
 ---
 
 ## Integration Status
