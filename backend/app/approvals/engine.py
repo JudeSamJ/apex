@@ -67,6 +67,20 @@ class ApprovalEngine:
             db.add(step)
 
         db.commit()
+
+        # Notify whoever can act on the first step — nothing to notify for
+        # later steps until the approval actually reaches them.
+        from app.notifications.service import notify_users_with_role
+        notify_users_with_role(
+            db=db,
+            entity_id=approval.entity_id,
+            role_id=steps_needed[0],
+            type="APPROVAL_REQUESTED",
+            title=f"{approvable_type.replace('_', ' ').title()} awaiting your approval",
+            body=f"A {approvable_type.lower().replace('_', ' ')} (amount ${amount}) needs your review.",
+        )
+        db.commit()
+
         return approval
 
     @staticmethod

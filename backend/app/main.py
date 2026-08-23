@@ -19,6 +19,7 @@ from app.qbo.router import router as qbo_router
 from app.screening.router import router as screening_router
 from app.disputes.router import router as disputes_router
 from app.reconciliation.router import router as reconciliation_router
+from app.notifications.router import router as notifications_router
 
 configure_logging()
 init_sentry()
@@ -61,3 +62,4 @@ app.include_router(qbo_router)
 app.include_router(screening_router)
 app.include_router(disputes_router)
 app.include_router(reconciliation_router)
+app.include_router(notifications_router)

@@ -37,6 +37,17 @@ Two new modules, built as pluggable mock/real clients following the same pattern
 
 New env vars: `SENTRY_DSN`, `SENTRY_ENVIRONMENT`, `SENTRY_TRACES_SAMPLE_RATE`, `LOG_LEVEL` (all optional, all default to off/INFO).
 
+### Product features (this pass)
+
+- **TOTP multi-factor authentication** (`entities_rbac/router.py`, `pyotp`) — `POST /api/auth/mfa/enroll` issues a secret + `otpauth://` URL (for any authenticator app), `POST /api/auth/mfa/confirm` activates it once the user proves possession. Once enabled, `POST /api/auth/token` no longer returns an access token directly — it returns a short-lived, single-purpose `mfa_challenge_token` that a normal request can't use as a bearer token (enforced in `get_current_user_context`), which must be exchanged via `POST /api/auth/mfa/verify-login` (rate-limited to 5 attempts/5 minutes per user) for a real one. `POST /api/auth/mfa/disable` requires a valid code, so a stolen session token alone can't turn off the second factor.
+  - **Still needed for production:** enforcing MFA for privileged roles (currently opt-in per user), backup/recovery codes for a lost authenticator, and SSO/SAML for enterprise customers (a separate, larger integration).
+- **In-app notifications + pluggable email** (`app/notifications/`) — `Notification` rows plus a mock/real (`SMTPEmailClient`, any SendGrid/Postmark/SES/relay via `USE_REAL_EMAIL`) client. Wired into: a new approval step's first-round approvers, a vendor sanctions-screening hit, a QBO sync item exhausting its retries, and a new card dispute — all notify the relevant `ADMIN`/approver users, with email on the higher-severity ones. `GET /api/notifications`, `POST /api/notifications/{id}/read`, `POST /api/notifications/read-all`.
+  - **Still needed for production:** a real SMTP/ESP account (`SMTP_HOST`/`SMTP_USERNAME`/`SMTP_PASSWORD`/`SMTP_FROM_EMAIL`), SMS for time-sensitive alerts, and a push/websocket channel so the frontend doesn't have to poll.
+- **CSV statement export** — `GET /api/transactions/export.csv`, same visibility rules as the existing transaction list (non-admin/bookkeeper users only see their own card).
+  - **Still needed for production:** PDF statements, and export for bills/reimbursements/ledger history (today only card transactions are covered).
+
+New env vars: `USE_REAL_EMAIL`, `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD`, `SMTP_FROM_EMAIL` (all optional, default to mock/logged email).
+
 New env vars: `COMPLYADVANTAGE_API_KEY`, `USE_REAL_SCREENING` (both default to mock/off).
 
 ---

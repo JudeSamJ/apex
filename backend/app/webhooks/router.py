@@ -510,6 +510,18 @@ async def handle_dispute_event(db: Session, event_type: str, dispute_data: Dict[
                 status=status,
             )
             db.add(dispute)
+            db.flush()
+
+            from app.notifications.service import notify_users_with_role
+            notify_users_with_role(
+                db=db,
+                entity_id=entity_id,
+                role_id="ADMIN",
+                type="DISPUTE_CREATED",
+                title=f"New card dispute for ${amount:.2f}",
+                body=f"Reason: {reason or 'unspecified'}. Respond via /api/disputes/{dispute.id}/evidence.",
+                send_email=True,
+            )
         else:
             dispute.status = status
             dispute.amount = amount

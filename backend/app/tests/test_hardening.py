@@ -563,3 +563,212 @@ def test_reconciliation_flags_drift_between_local_and_provider_status(db_session
     assert runs_response.status_code == 200
     assert len(runs_response.json()) == 1
 
+def test_mfa_enroll_confirm_and_two_step_login(db_session):
+    db = db_session
+    import pyotp
+
+    role = db.query(Role).filter(Role.id == "ADMIN").first()
+    if not role:
+        db.add(Role(id="ADMIN", name="Admin"))
+        db.commit()
+
+    entity = Entity(id="mfa-ent-1", name="MFA Entity", onboarding_status="APPROVED")
+    user = User(
+        id="mfa-user-1",
+        name="MFA User",
+        email="mfa-user@apex.com",
+        entity_id=entity.id,
+        password_hash=get_password_hash("password123")
+    )
+    db.add_all([entity, user])
+    db.flush()
+    db.add(UserRole(user_id=user.id, role_id="ADMIN", entity_id=entity.id))
+    db.commit()
+
+    # Plain login works before MFA is enabled: a real access_token comes back directly.
+    login = client.post("/api/auth/token", data={"username": "mfa-user@apex.com", "password": "password123"})
+    assert login.status_code == 200
+    login_body = login.json()
+    assert login_body["access_token"]
+    assert login_body["mfa_required"] is False
+    headers = {"Authorization": f"Bearer {login_body['access_token']}", "X-Entity-Id": entity.id}
+
+    # A raw MFA challenge token must never work as a real access token.
+    enroll = client.post("/api/auth/mfa/enroll", headers=headers)
+    assert enroll.status_code == 200
+    secret = enroll.json()["secret"]
+    assert enroll.json()["otpauth_url"].startswith("otpauth://")
+
+    bad_confirm = client.post("/api/auth/mfa/confirm", headers=headers, json={"code": "000000"})
+    assert bad_confirm.status_code == 400
+
+    valid_code = pyotp.TOTP(secret).now()
+    confirm = client.post("/api/auth/mfa/confirm", headers=headers, json={"code": valid_code})
+    assert confirm.status_code == 200
+    assert confirm.json()["mfa_enabled"] is True
+
+    # Logging in again now yields a challenge, not a real token.
+    login2 = client.post("/api/auth/token", data={"username": "mfa-user@apex.com", "password": "password123"})
+    assert login2.status_code == 200
+    login2_body = login2.json()
+    assert login2_body["mfa_required"] is True
+    assert login2_body["access_token"] is None
+    challenge_token = login2_body["mfa_challenge_token"]
+
+    # The challenge token alone must not authenticate a normal request.
+    challenge_as_bearer = client.get(
+        "/api/auth/me", headers={"Authorization": f"Bearer {challenge_token}", "X-Entity-Id": entity.id}
+    )
+    assert challenge_as_bearer.status_code == 401
+
+    # Wrong code at the verify step is rejected.
+    bad_verify = client.post("/api/auth/mfa/verify-login", json={"challenge_token": challenge_token, "code": "000000"})
+    assert bad_verify.status_code == 401
+
+    # Correct code exchanges the challenge for a real access token.
+    valid_code_2 = pyotp.TOTP(secret).now()
+    good_verify = client.post(
+        "/api/auth/mfa/verify-login", json={"challenge_token": challenge_token, "code": valid_code_2}
+    )
+    assert good_verify.status_code == 200
+    real_token = good_verify.json()["access_token"]
+    assert real_token
+
+    me = client.get("/api/auth/me", headers={"Authorization": f"Bearer {real_token}", "X-Entity-Id": entity.id})
+    assert me.status_code == 200
+
+    # Disabling MFA requires a valid code too.
+    new_headers = {"Authorization": f"Bearer {real_token}", "X-Entity-Id": entity.id}
+    bad_disable = client.post("/api/auth/mfa/disable", headers=new_headers, json={"code": "000000"})
+    assert bad_disable.status_code == 400
+
+    valid_code_3 = pyotp.TOTP(secret).now()
+    disable = client.post("/api/auth/mfa/disable", headers=new_headers, json={"code": valid_code_3})
+    assert disable.status_code == 200
+    assert disable.json()["mfa_enabled"] is False
+
+def test_notifications_created_and_readable(db_session):
+    db = db_session
+    from app.bills.models import Vendor
+    from app.notifications.models import Notification
+
+    role = db.query(Role).filter(Role.id == "ADMIN").first()
+    if not role:
+        db.add(Role(id="ADMIN", name="Admin"))
+        db.commit()
+
+    entity = Entity(id="notif-ent-1", name="Notification Entity", onboarding_status="APPROVED")
+    dept = Department(id="notif-dept-1", entity_id=entity.id, name="Notif Dept")
+    admin_user = User(
+        id="notif-admin-1",
+        name="Notif Admin",
+        email="notif-admin@apex.com",
+        entity_id=entity.id,
+        password_hash=get_password_hash("password123")
+    )
+    db.add_all([entity, dept, admin_user])
+    db.flush()
+    db.add(UserRole(user_id=admin_user.id, role_id="ADMIN", entity_id=entity.id))
+    db.commit()
+
+    response = client.post(
+        "/api/auth/token",
+        data={"username": "notif-admin@apex.com", "password": "password123"}
+    )
+    headers = {"Authorization": f"Bearer {response.json()['access_token']}", "X-Entity-Id": entity.id}
+
+    # Creating a sanctions-flagged vendor must notify the entity's admins.
+    flagged = client.post(
+        "/api/bills/vendors",
+        headers=headers,
+        json={"name": "OFAC TEST Holdings", "email": "ap@flagged.example", "masked_bank_account": "acct_9999"}
+    )
+    assert flagged.status_code == 200
+
+    notif_row = db.query(Notification).filter(
+        Notification.entity_id == entity.id, Notification.type == "SANCTIONS_HIT"
+    ).first()
+    assert notif_row is not None
+    assert notif_row.user_id == admin_user.id
+    assert notif_row.email_sent is True
+
+    list_response = client.get("/api/notifications", headers=headers)
+    assert list_response.status_code == 200
+    items = list_response.json()
+    assert any(n["type"] == "SANCTIONS_HIT" and not n["read"] for n in items)
+
+    notif_id = next(n["id"] for n in items if n["type"] == "SANCTIONS_HIT")
+    read_response = client.post(f"/api/notifications/{notif_id}/read", headers=headers)
+    assert read_response.status_code == 200
+    assert read_response.json()["read"] is True
+
+    unread_response = client.get("/api/notifications?unread_only=true", headers=headers)
+    assert all(n["id"] != notif_id for n in unread_response.json())
+
+def test_transaction_csv_export(db_session):
+    db = db_session
+    import csv
+    import io
+    from app.cards.models import Card
+
+    role = db.query(Role).filter(Role.id == "ADMIN").first()
+    if not role:
+        db.add(Role(id="ADMIN", name="Admin"))
+        db.commit()
+
+    entity = Entity(id="csv-ent-1", name="CSV Entity", onboarding_status="APPROVED")
+    dept = Department(id="csv-dept-1", entity_id=entity.id, name="CSV Dept")
+    admin_user = User(
+        id="csv-admin-1",
+        name="CSV Admin",
+        email="csv-admin@apex.com",
+        entity_id=entity.id,
+        password_hash=get_password_hash("password123")
+    )
+    db.add_all([entity, dept, admin_user])
+    db.flush()
+    db.add(UserRole(user_id=admin_user.id, role_id="ADMIN", entity_id=entity.id))
+
+    card = Card(
+        id="csv-card-1",
+        entity_id=entity.id,
+        owner_id=admin_user.id,
+        department_id=dept.id,
+        spend_program_id="csv-sp-1",
+        type="VIRTUAL",
+        limit_amount=Decimal("1000.00"),
+        status="ACTIVE",
+        masked_pan="**** **** **** 4321",
+        card_token="tok_csv_test"
+    )
+    tx = Transaction(
+        id="csv-tx-1",
+        entity_id=entity.id,
+        department_id=dept.id,
+        card_id=card.id,
+        amount=Decimal("42.50"),
+        currency="USD",
+        merchant_name="CSV Export Test Merchant",
+        merchant_mcc="5734",
+        status="SETTLED"
+    )
+    db.add_all([card, tx])
+    db.commit()
+
+    response = client.post("/api/auth/token", data={"username": "csv-admin@apex.com", "password": "password123"})
+    headers = {"Authorization": f"Bearer {response.json()['access_token']}", "X-Entity-Id": entity.id}
+
+    export_response = client.get("/api/transactions/export.csv", headers=headers)
+    assert export_response.status_code == 200
+    assert "text/csv" in export_response.headers["content-type"]
+
+    rows = list(csv.reader(io.StringIO(export_response.text)))
+    assert rows[0] == [
+        "id", "date", "owner", "card", "merchant", "mcc", "category",
+        "amount", "currency", "status", "decline_reason"
+    ]
+    data_row = next(r for r in rows[1:] if r[0] == "csv-tx-1")
+    assert data_row[4] == "CSV Export Test Merchant"
+    assert Decimal(data_row[7]) == Decimal("42.50")
+    assert data_row[9] == "SETTLED"
+

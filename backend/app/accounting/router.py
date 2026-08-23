@@ -420,6 +420,15 @@ def process_mock_erp_sync(
                 item.error_message = str(e)[:500]
                 if item.retry_count >= MAX_SYNC_RETRIES:
                     item.status = "ERROR"
+                    from app.notifications.service import notify_users_with_role
+                    notify_users_with_role(
+                        db=db,
+                        entity_id=current_user.active_entity_id,
+                        role_id="ADMIN",
+                        type="SYNC_FAILED",
+                        title=f"QBO sync failed for {item.record_type} after {MAX_SYNC_RETRIES} attempts",
+                        body=item.error_message,
+                    )
                 else:
                     # Exponential backoff: 1, 2, 4, 8, 16 minutes, capped at MAX_SYNC_RETRIES
                     item.status = "SYNC_READY"

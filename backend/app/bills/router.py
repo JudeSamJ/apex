@@ -89,6 +89,17 @@ def create_vendor(
     # AML/OFAC sanctions screening on the vendor name before any bill can be paid to it
     screening = screen_subject(db, "VENDOR", vendor.id, vendor.name)
     vendor.screening_status = screening.status
+    if screening.status == "HIT":
+        from app.notifications.service import notify_users_with_role
+        notify_users_with_role(
+            db=db,
+            entity_id=current_user.active_entity_id,
+            role_id="ADMIN",
+            type="SANCTIONS_HIT",
+            title=f"Vendor '{vendor.name}' flagged by sanctions screening",
+            body="This vendor cannot be paid until an admin reviews and clears the screening result.",
+            send_email=True,
+        )
 
     contact = VendorContact(
         entity_id=current_user.active_entity_id,

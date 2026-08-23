@@ -1,4 +1,7 @@
+import csv
+import io
 from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 from pydantic import BaseModel
@@ -65,6 +68,51 @@ def list_transactions(
             "created_at": tx.created_at.isoformat()
         })
     return out
+
+@router.get("/export.csv")
+def export_transactions_csv(
+    current_user: UserContext = Depends(get_current_user_context),
+    db: Session = Depends(get_db)
+):
+    """CSV statement export — same visibility rules as the list endpoint
+    (non-admin/bookkeeper users only see their own card's transactions)."""
+    query = db.query(Transaction).join(Card, Transaction.card_id == Card.id).filter(
+        Transaction.entity_id == current_user.active_entity_id
+    )
+
+    if not current_user.is_admin and "BOOKKEEPER" not in current_user.roles:
+        query = query.filter(Card.owner_id == current_user.user_id)
+
+    txs = query.order_by(Transaction.created_at.desc()).all()
+
+    buffer = io.StringIO()
+    writer = csv.writer(buffer)
+    writer.writerow([
+        "id", "date", "owner", "card", "merchant", "mcc", "category",
+        "amount", "currency", "status", "decline_reason"
+    ])
+    for tx in txs:
+        writer.writerow([
+            tx.id,
+            tx.created_at.isoformat(),
+            tx.card.owner.name,
+            tx.card.masked_pan,
+            tx.merchant_name,
+            tx.merchant_mcc,
+            tx.category or "",
+            tx.amount,
+            tx.currency,
+            tx.status,
+            tx.decline_reason or "",
+        ])
+    buffer.seek(0)
+
+    filename = f"transactions_{datetime.utcnow().strftime('%Y%m%d')}.csv"
+    return StreamingResponse(
+        buffer,
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'}
+    )
 
 @router.post("/simulate-swipe")
 def simulate_swipe(

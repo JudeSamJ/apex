@@ -42,6 +42,7 @@ def init_db():
     from app.screening.models import SanctionsScreening
     from app.disputes.models import CardDispute
     from app.reconciliation.models import ReconciliationRun, ReconciliationDiscrepancy
+    from app.notifications.models import Notification
     
     # Create tables
     Base.metadata.create_all(bind=engine)

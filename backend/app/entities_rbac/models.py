@@ -1,5 +1,5 @@
 import uuid
-from sqlalchemy import Column, String, ForeignKey, UniqueConstraint
+from sqlalchemy import Column, String, ForeignKey, UniqueConstraint, Boolean
 from sqlalchemy.orm import relationship
 from app.database import Base
 from enum import Enum
@@ -49,6 +49,8 @@ class User(Base):
     email = Column(String(255), unique=True, nullable=False)
     name = Column(String(255), nullable=False)
     password_hash = Column(String(255), nullable=False)  # For auth
+    mfa_secret = Column(String(64), nullable=True)  # TOTP secret, set on enroll
+    mfa_enabled = Column(Boolean, nullable=False, default=False)
 
     entity = relationship("Entity")
     roles = relationship("UserRole", back_populates="user")

@@ -13,6 +13,8 @@ from app.entities_rbac.auth import (
     get_password_hash,
     verify_password,
     create_access_token,
+    create_mfa_challenge_token,
+    decode_mfa_challenge_token,
     get_current_user_context,
     UserContext
 )
@@ -30,6 +32,23 @@ class UserRegister(BaseModel):
 class TokenResponse(BaseModel):
     access_token: str
     token_type: str
+
+class LoginResponse(BaseModel):
+    access_token: Optional[str] = None
+    token_type: Optional[str] = None
+    mfa_required: bool = False
+    mfa_challenge_token: Optional[str] = None
+
+class MfaEnrollResponse(BaseModel):
+    secret: str
+    otpauth_url: str
+
+class MfaCodeIn(BaseModel):
+    code: str
+
+class MfaVerifyLoginIn(BaseModel):
+    challenge_token: str
+    code: str
 
 class UserRoleOut(BaseModel):
     role_id: str
@@ -121,7 +140,7 @@ def register(user_in: UserRegister, db: Session = Depends(get_db)):
     access_token = create_access_token(data={"sub": user.id})
     return {"access_token": access_token, "token_type": "bearer"}
 
-@router.post("/token", response_model=TokenResponse)
+@router.post("/token", response_model=LoginResponse)
 def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
     user = db.query(User).filter(User.email == form_data.username).first()
     if not user or not verify_password(form_data.password, user.password_hash):
@@ -130,6 +149,87 @@ def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depend
             detail="Incorrect username or password",
             headers={"WWW-Authenticate": "Bearer"},
         )
+
+    if user.mfa_enabled:
+        # Password check passed, but a second factor is still required —
+        # issue a short-lived challenge token instead of a real access token.
+        return {
+            "mfa_required": True,
+            "mfa_challenge_token": create_mfa_challenge_token(user.id)
+        }
+
+    access_token = create_access_token(data={"sub": user.id})
+    return {"access_token": access_token, "token_type": "bearer"}
+
+@router.post("/mfa/enroll", response_model=MfaEnrollResponse)
+def mfa_enroll(current_user: UserContext = Depends(get_current_user_context), db: Session = Depends(get_db)):
+    """Start TOTP enrollment: generates and stores a new secret (MFA stays
+    disabled until confirmed via /mfa/confirm with a valid code)."""
+    import pyotp
+
+    user = db.query(User).filter(User.id == current_user.user_id).first()
+    secret = pyotp.random_base32()
+    user.mfa_secret = secret
+    user.mfa_enabled = False
+    db.commit()
+
+    otpauth_url = pyotp.totp.TOTP(secret).provisioning_uri(name=user.email, issuer_name="Apex Fintech")
+    return {"secret": secret, "otpauth_url": otpauth_url}
+
+@router.post("/mfa/confirm")
+def mfa_confirm(body: MfaCodeIn, current_user: UserContext = Depends(get_current_user_context), db: Session = Depends(get_db)):
+    """Confirm enrollment by proving the authenticator app is set up correctly."""
+    import pyotp
+
+    user = db.query(User).filter(User.id == current_user.user_id).first()
+    if not user.mfa_secret:
+        raise HTTPException(status_code=400, detail="Call /api/auth/mfa/enroll first")
+
+    if not pyotp.TOTP(user.mfa_secret).verify(body.code, valid_window=1):
+        raise HTTPException(status_code=400, detail="Invalid code")
+
+    user.mfa_enabled = True
+    db.commit()
+    return {"mfa_enabled": True}
+
+@router.post("/mfa/disable")
+def mfa_disable(body: MfaCodeIn, current_user: UserContext = Depends(get_current_user_context), db: Session = Depends(get_db)):
+    """Disable MFA — requires a valid current code so a stolen session token
+    alone can't be used to turn off the second factor."""
+    import pyotp
+
+    user = db.query(User).filter(User.id == current_user.user_id).first()
+    if not user.mfa_enabled or not user.mfa_secret:
+        raise HTTPException(status_code=400, detail="MFA is not enabled")
+
+    if not pyotp.TOTP(user.mfa_secret).verify(body.code, valid_window=1):
+        raise HTTPException(status_code=400, detail="Invalid code")
+
+    user.mfa_enabled = False
+    user.mfa_secret = None
+    db.commit()
+    return {"mfa_enabled": False}
+
+@router.post("/mfa/verify-login", response_model=TokenResponse)
+def mfa_verify_login(body: MfaVerifyLoginIn, db: Session = Depends(get_db)):
+    """Second step of MFA login: exchange a challenge token + TOTP code for
+    a real access token."""
+    from app.rate_limit import check_rate_limit
+
+    user_id = decode_mfa_challenge_token(body.challenge_token)
+    # Cap guess attempts per challenged user, independent of the challenge
+    # token's own 5-minute expiry, so a stolen challenge token can't be
+    # brute-forced against all 10,000 possible 6-digit codes.
+    check_rate_limit(user_id=user_id, endpoint="mfa_verify_login", limit=5, window_seconds=300)
+
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user or not user.mfa_enabled or not user.mfa_secret:
+        raise HTTPException(status_code=401, detail="MFA is not active for this account")
+
+    import pyotp
+    if not pyotp.TOTP(user.mfa_secret).verify(body.code, valid_window=1):
+        raise HTTPException(status_code=401, detail="Invalid code")
+
     access_token = create_access_token(data={"sub": user.id})
     return {"access_token": access_token, "token_type": "bearer"}
 

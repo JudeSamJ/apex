@@ -20,3 +20,5 @@ httpx==0.28.1
 stripe==12.5.1
 dwollav2==2.3.0
 plaid-python==36.0.0
+
+pyotp==2.9.0

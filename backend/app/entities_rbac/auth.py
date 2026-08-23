@@ -33,6 +33,37 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
     encoded_jwt = jwt.encode(to_encode, JWT_SECRET, algorithm=ALGORITHM)
     return encoded_jwt
 
+MFA_CHALLENGE_EXPIRE_MINUTES = 5
+
+def create_mfa_challenge_token(user_id: str) -> str:
+    """A short-lived, single-purpose token proving "this user just passed
+    password auth" — it is NOT a valid access token (see the `purpose` check
+    in get_current_user_context) and only unlocks POST /api/auth/mfa/verify-login."""
+    return create_access_token(
+        data={"sub": user_id, "purpose": "mfa_challenge"},
+        expires_delta=timedelta(minutes=MFA_CHALLENGE_EXPIRE_MINUTES)
+    )
+
+def decode_mfa_challenge_token(token: str) -> str:
+    """Decode an MFA challenge token and return the user_id, or raise 401."""
+    invalid_exception = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Invalid or expired MFA challenge"
+    )
+    try:
+        payload = jwt.decode(token, JWT_SECRET, algorithms=[ALGORITHM])
+    except JWTError:
+        raise invalid_exception
+
+    if payload.get("purpose") != "mfa_challenge":
+        raise invalid_exception
+
+    user_id = payload.get("sub")
+    if not user_id:
+        raise invalid_exception
+
+    return user_id
+
 class UserContext:
     def __init__(
         self,
@@ -92,6 +123,10 @@ def get_current_user_context(
         payload = jwt.decode(token, JWT_SECRET, algorithms=[ALGORITHM])
         user_id: str = payload.get("sub")
         if user_id is None:
+            raise credentials_exception
+        # A single-purpose token (e.g. the MFA challenge issued mid-login) must
+        # never be usable as a full access token — reject anything scoped.
+        if payload.get("purpose") is not None:
             raise credentials_exception
     except JWTError:
         raise credentials_exception
