@@ -11,6 +11,7 @@ from app.database import get_db
 from app.entities_rbac.auth import get_current_user_context, UserContext
 from app.insights.models import MerchantNormalization, Insight
 from app.transactions.models import Transaction
+from app.money import MoneyOut
 
 router = APIRouter(prefix="/api/insights", tags=["insights"])
 
@@ -20,7 +21,7 @@ class InsightOut(BaseModel):
     status: str
     severity: str
     description: str
-    potential_savings: Decimal
+    potential_savings: MoneyOut
     created_at: str
 
 def normalize_merchant(name: str) -> str:

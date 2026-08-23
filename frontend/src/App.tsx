@@ -66,6 +66,8 @@ interface Card {
   status: string;
   masked_pan: string;
   created_at: string;
+  single_txn_limit: number | null;
+  daily_txn_count_limit: number | null;
 }
 
 interface CardRequest {
@@ -91,6 +93,15 @@ interface Transaction {
   category: string | null;
   status: string;
   decline_reason: string | null;
+  created_at: string;
+}
+
+interface TransactionReceipt {
+  id: string;
+  filename: string;
+  content_type: string;
+  size_bytes: number;
+  uploaded_by_name: string;
   created_at: string;
 }
 
@@ -435,7 +446,16 @@ export default function App() {
   const [createProgramName, setCreateProgramName] = useState<string>('');
   const [createProgramLimit, setCreateProgramLimit] = useState<number>(5000);
   const [createProgramType, setCreateProgramType] = useState<string>('MONTHLY');
-  
+
+  // Card velocity controls (admin edit-in-place per card)
+  const [editingControlsCardId, setEditingControlsCardId] = useState<string | null>(null);
+  const [controlsSingleTxnLimit, setControlsSingleTxnLimit] = useState<string>('');
+  const [controlsDailyTxnCount, setControlsDailyTxnCount] = useState<string>('');
+
+  // Transaction receipts
+  const [receiptsByTxn, setReceiptsByTxn] = useState<Record<string, TransactionReceipt[]>>({});
+  const [expandedReceiptsTxnId, setExpandedReceiptsTxnId] = useState<string | null>(null);
+
   // Form states - Vendors
   const [newVendorName, setNewVendorName] = useState<string>('');
   const [newVendorEmail, setNewVendorEmail] = useState<string>('');
@@ -1676,6 +1696,102 @@ export default function App() {
     } catch (e) { console.error(e); }
   };
 
+  const handleSaveCardControls = async (cardId: string) => {
+    setErrorMessage(null);
+    setSuccessMessage(null);
+    try {
+      const res = await fetch(`${API_BASE}/api/cards/${cardId}/controls`, {
+        method: 'PATCH',
+        headers: { ...getHeaders(), 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          single_txn_limit: controlsSingleTxnLimit === '' ? null : Number(controlsSingleTxnLimit),
+          daily_txn_count_limit: controlsDailyTxnCount === '' ? null : Number(controlsDailyTxnCount)
+        })
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.detail || 'Failed to update card controls');
+      }
+      setSuccessMessage('Card spend controls updated.');
+      setEditingControlsCardId(null);
+      fetchCards();
+    } catch (err: any) {
+      setErrorMessage(err.message);
+    }
+  };
+
+  // --- Transaction receipts ---
+  const fetchReceipts = async (transactionId: string) => {
+    try {
+      const res = await fetch(`${API_BASE}/api/transactions/${transactionId}/receipts`, { headers: getHeaders() });
+      if (res.ok) {
+        const data = await res.json();
+        setReceiptsByTxn(prev => ({ ...prev, [transactionId]: data }));
+      }
+    } catch (e) { console.error(e); }
+  };
+
+  const handleToggleReceipts = (transactionId: string) => {
+    if (expandedReceiptsTxnId === transactionId) {
+      setExpandedReceiptsTxnId(null);
+    } else {
+      setExpandedReceiptsTxnId(transactionId);
+      fetchReceipts(transactionId);
+    }
+  };
+
+  const handleUploadReceipt = async (transactionId: string, file: File) => {
+    setErrorMessage(null);
+    setSuccessMessage(null);
+    try {
+      const formData = new FormData();
+      formData.append('file', file);
+      const res = await fetch(`${API_BASE}/api/transactions/${transactionId}/receipts`, {
+        method: 'POST',
+        headers: getHeaders(),
+        body: formData
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.detail || 'Failed to upload receipt');
+      }
+      setSuccessMessage('Receipt uploaded.');
+      fetchReceipts(transactionId);
+    } catch (err: any) {
+      setErrorMessage(err.message);
+    }
+  };
+
+  const handleDeleteReceipt = async (transactionId: string, receiptId: string) => {
+    setErrorMessage(null);
+    setSuccessMessage(null);
+    try {
+      const res = await fetch(`${API_BASE}/api/transactions/receipts/${receiptId}`, {
+        method: 'DELETE',
+        headers: getHeaders()
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.detail || 'Failed to delete receipt');
+      }
+      fetchReceipts(transactionId);
+    } catch (err: any) {
+      setErrorMessage(err.message);
+    }
+  };
+
+  const handleViewReceipt = async (receiptId: string) => {
+    try {
+      const res = await fetch(`${API_BASE}/api/transactions/receipts/${receiptId}/file`, { headers: getHeaders() });
+      if (!res.ok) throw new Error('Failed to load receipt');
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      window.open(url, '_blank');
+    } catch (err: any) {
+      setErrorMessage(err.message);
+    }
+  };
+
   const handleDecideApproval = async (stepId: string, decision: 'APPROVED' | 'REJECTED') => {
     setErrorMessage(null);
     setSuccessMessage(null);
@@ -2828,6 +2944,40 @@ export default function App() {
                         </div>
                       </div>
 
+                      <div style={{ marginTop: '1rem', paddingTop: '0.75rem', borderTop: '1px solid var(--border-color)', fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                        <p>Single swipe cap: {card.single_txn_limit != null ? `${card.currency} ${card.single_txn_limit.toLocaleString()}` : 'None'}</p>
+                        <p>Daily swipe count cap: {card.daily_txn_count_limit != null ? card.daily_txn_count_limit : 'None'}</p>
+                      </div>
+
+                      {user.roles.includes('ADMIN') && editingControlsCardId === card.id && (
+                        <div style={{ marginTop: '0.75rem', display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+                          <div>
+                            <label style={{ fontSize: '0.7rem' }}>Single-swipe limit ({card.currency})</label>
+                            <input
+                              type="number"
+                              placeholder="No limit"
+                              value={controlsSingleTxnLimit}
+                              onChange={(e) => setControlsSingleTxnLimit(e.target.value)}
+                              style={{ fontSize: '0.85rem', padding: '0.4rem' }}
+                            />
+                          </div>
+                          <div>
+                            <label style={{ fontSize: '0.7rem' }}>Daily swipe count limit</label>
+                            <input
+                              type="number"
+                              placeholder="No limit"
+                              value={controlsDailyTxnCount}
+                              onChange={(e) => setControlsDailyTxnCount(e.target.value)}
+                              style={{ fontSize: '0.85rem', padding: '0.4rem' }}
+                            />
+                          </div>
+                          <div style={{ display: 'flex', gap: '0.5rem' }}>
+                            <button className="btn btn-primary" style={{ flex: 1, fontSize: '0.8rem' }} onClick={() => handleSaveCardControls(card.id)}>Save</button>
+                            <button className="btn btn-secondary" style={{ flex: 1, fontSize: '0.8rem' }} onClick={() => setEditingControlsCardId(null)}>Cancel</button>
+                          </div>
+                        </div>
+                      )}
+
                       <div style={{ marginTop: '1.5rem', display: 'flex', gap: '0.5rem', borderTop: '1px solid var(--border-color)', paddingTop: '1rem' }}>
                         {card.status === 'ACTIVE' ? (
                           <button className="btn btn-secondary" style={{ width: '100%', display: 'flex', gap: '0.5rem', justifyContent: 'center' }} onClick={() => handleFreeze(card.id)}>
@@ -2838,6 +2988,19 @@ export default function App() {
                           <button className="btn btn-primary" style={{ width: '100%', display: 'flex', gap: '0.5rem', justifyContent: 'center' }} onClick={() => handleUnfreeze(card.id)}>
                             <Unlock size={16} />
                             <span>Activate Card</span>
+                          </button>
+                        )}
+                        {user.roles.includes('ADMIN') && editingControlsCardId !== card.id && (
+                          <button
+                            className="btn btn-secondary"
+                            style={{ width: '100%' }}
+                            onClick={() => {
+                              setEditingControlsCardId(card.id);
+                              setControlsSingleTxnLimit(card.single_txn_limit != null ? String(card.single_txn_limit) : '');
+                              setControlsDailyTxnCount(card.daily_txn_count_limit != null ? String(card.daily_txn_count_limit) : '');
+                            }}
+                          >
+                            Edit Controls
                           </button>
                         )}
                       </div>
@@ -3706,29 +3869,70 @@ export default function App() {
                       <th style={{ padding: '0.75rem' }}>Amount</th>
                       <th style={{ padding: '0.75rem' }}>Settlement State</th>
                       <th style={{ padding: '0.75rem' }}>Created At</th>
+                      <th style={{ padding: '0.75rem' }}>Receipts</th>
                     </tr>
                   </thead>
                   <tbody>
                     {transactions.map(tx => (
-                      <tr key={tx.id} style={{ borderBottom: '1px solid var(--border-color)', fontSize: '0.9rem' }}>
-                        <td style={{ padding: '0.75rem', fontWeight: 500 }}>{tx.owner_name}</td>
-                        <td style={{ padding: '0.75rem', color: 'var(--text-secondary)', fontFamily: 'monospace' }}>{tx.masked_pan}</td>
-                        <td style={{ padding: '0.75rem', fontWeight: 500 }}>{tx.merchant_name}</td>
-                        <td style={{ padding: '0.75rem' }}>
-                          <span className="badge badge-info">{tx.category || 'Categorizing...'}</span>
-                        </td>
-                        <td style={{ padding: '0.75rem', fontWeight: 700, color: tx.status === 'DECLINED' ? 'var(--color-danger)' : 'var(--text-primary)' }}>
-                          {tx.currency} {tx.amount.toFixed(2)}
-                        </td>
-                        <td style={{ padding: '0.75rem' }}>
-                          <span className={`badge ${tx.status === 'SETTLED' ? 'badge-success' : tx.status === 'HELD' ? 'badge-warning' : 'badge-danger'}`}>
-                            {tx.status}
-                          </span>
-                        </td>
-                        <td style={{ padding: '0.75rem', color: 'var(--text-muted)' }}>
-                          {new Date(tx.created_at).toLocaleString()}
-                        </td>
-                      </tr>
+                      <React.Fragment key={tx.id}>
+                        <tr style={{ borderBottom: '1px solid var(--border-color)', fontSize: '0.9rem' }}>
+                          <td style={{ padding: '0.75rem', fontWeight: 500 }}>{tx.owner_name}</td>
+                          <td style={{ padding: '0.75rem', color: 'var(--text-secondary)', fontFamily: 'monospace' }}>{tx.masked_pan}</td>
+                          <td style={{ padding: '0.75rem', fontWeight: 500 }}>{tx.merchant_name}</td>
+                          <td style={{ padding: '0.75rem' }}>
+                            <span className="badge badge-info">{tx.category || 'Categorizing...'}</span>
+                          </td>
+                          <td style={{ padding: '0.75rem', fontWeight: 700, color: tx.status === 'DECLINED' ? 'var(--color-danger)' : 'var(--text-primary)' }}>
+                            {tx.currency} {tx.amount.toFixed(2)}
+                          </td>
+                          <td style={{ padding: '0.75rem' }}>
+                            <span className={`badge ${tx.status === 'SETTLED' ? 'badge-success' : tx.status === 'HELD' ? 'badge-warning' : 'badge-danger'}`}>
+                              {tx.status}
+                            </span>
+                          </td>
+                          <td style={{ padding: '0.75rem', color: 'var(--text-muted)' }}>
+                            {new Date(tx.created_at).toLocaleString()}
+                          </td>
+                          <td style={{ padding: '0.75rem' }}>
+                            <button className="btn btn-secondary" style={{ fontSize: '0.75rem', padding: '0.35rem 0.6rem' }} onClick={() => handleToggleReceipts(tx.id)}>
+                              {expandedReceiptsTxnId === tx.id ? 'Hide' : 'View'}
+                              {receiptsByTxn[tx.id] && receiptsByTxn[tx.id].length > 0 ? ` (${receiptsByTxn[tx.id].length})` : ''}
+                            </button>
+                          </td>
+                        </tr>
+                        {expandedReceiptsTxnId === tx.id && (
+                          <tr style={{ borderBottom: '1px solid var(--border-color)', background: '#0e1014' }}>
+                            <td colSpan={8} style={{ padding: '1rem' }}>
+                              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+                                {(receiptsByTxn[tx.id] || []).length === 0 && (
+                                  <p style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>No receipts uploaded for this transaction.</p>
+                                )}
+                                {(receiptsByTxn[tx.id] || []).map(r => (
+                                  <div key={r.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '0.85rem' }}>
+                                    <span>
+                                      {r.filename} <span style={{ color: 'var(--text-muted)' }}>({(r.size_bytes / 1024).toFixed(0)} KB, by {r.uploaded_by_name})</span>
+                                    </span>
+                                    <div style={{ display: 'flex', gap: '0.5rem' }}>
+                                      <button className="btn btn-secondary" style={{ fontSize: '0.75rem' }} onClick={() => handleViewReceipt(r.id)}>View</button>
+                                      <button className="btn btn-secondary" style={{ fontSize: '0.75rem', color: 'var(--color-danger)' }} onClick={() => handleDeleteReceipt(tx.id, r.id)}>Delete</button>
+                                    </div>
+                                  </div>
+                                ))}
+                                <input
+                                  type="file"
+                                  accept="image/*,application/pdf"
+                                  style={{ fontSize: '0.8rem' }}
+                                  onChange={(e) => {
+                                    const file = e.target.files?.[0];
+                                    if (file) handleUploadReceipt(tx.id, file);
+                                    e.target.value = '';
+                                  }}
+                                />
+                              </div>
+                            </td>
+                          </tr>
+                        )}
+                      </React.Fragment>
                     ))}
                   </tbody>
                 </table>

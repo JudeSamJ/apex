@@ -1,6 +1,6 @@
 import csv
 import io
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 from sqlalchemy import func
@@ -13,10 +13,12 @@ import uuid
 from app.database import get_db
 from app.entities_rbac.auth import get_current_user_context, UserContext
 from app.cards.models import Card
-from app.transactions.models import Transaction
+from app.transactions.models import Transaction, TransactionReceipt
 from app.ledger.client import LedgerClient
 from app.transactions.tasks import process_settlement
 from app.transactions.pipeline_events import emit_pipeline_event
+from app.transactions.storage import save_receipt, read_receipt, delete_receipt, ALLOWED_CONTENT_TYPES, MAX_RECEIPT_BYTES
+from app.money import MoneyOut
 
 router = APIRouter(prefix="/api/transactions", tags=["transactions"])
 
@@ -30,7 +32,7 @@ class TransactionOut(BaseModel):
     id: str
     owner_name: str
     masked_pan: str
-    amount: Decimal
+    amount: MoneyOut
     currency: str
     merchant_name: str
     merchant_mcc: str
@@ -199,6 +201,21 @@ def simulate_swipe(
     if program.allowed_mcc and swipe.merchant_mcc not in program.allowed_mcc:
         return decline("Merchant category not allowed by spend program")
 
+    # 5b. Per-card velocity controls (admin-configurable, independent of the
+    # cumulative program/card limit checks above).
+    if card.single_txn_limit is not None and swipe.amount > card.single_txn_limit:
+        return decline("Exceeds this card's single-transaction limit")
+
+    if card.daily_txn_count_limit is not None:
+        today_start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+        todays_count = db.query(Transaction).filter(
+            Transaction.card_id == card.id,
+            Transaction.status.in_(["HELD", "SETTLED"]),
+            Transaction.created_at >= today_start
+        ).count()
+        if todays_count >= card.daily_txn_count_limit:
+            return decline("Card has reached its daily transaction limit")
+
     # 6. Success Path - Authorize (HELD)
     transaction_id = str(uuid.uuid4())
     idempotency_key = f"hold_{transaction_id}"
@@ -245,3 +262,151 @@ def simulate_swipe(
         "amount": tx.amount,
         "merchant_name": tx.merchant_name
     }
+
+
+class ReceiptOut(BaseModel):
+    id: str
+    filename: str
+    content_type: str
+    size_bytes: int
+    uploaded_by_name: str
+    created_at: str
+
+
+def _get_transaction_for_receipt_access(
+    transaction_id: str, current_user: UserContext, db: Session
+) -> Transaction:
+    """A transaction's receipts are visible/manageable by the same people
+    who can see the transaction itself: the card's owner, or an
+    admin/bookkeeper on the entity."""
+    tx = db.query(Transaction).join(Card, Transaction.card_id == Card.id).filter(
+        Transaction.id == transaction_id,
+        Transaction.entity_id == current_user.active_entity_id
+    ).first()
+    if not tx:
+        raise HTTPException(status_code=404, detail="Transaction not found")
+
+    if not current_user.is_admin and "BOOKKEEPER" not in current_user.roles:
+        if tx.card.owner_id != current_user.user_id:
+            raise HTTPException(status_code=403, detail="You don't have access to this transaction")
+
+    return tx
+
+
+@router.post("/{transaction_id}/receipts", response_model=ReceiptOut)
+def upload_receipt(
+    transaction_id: str,
+    file: UploadFile = File(...),
+    current_user: UserContext = Depends(get_current_user_context),
+    db: Session = Depends(get_db)
+):
+    tx = _get_transaction_for_receipt_access(transaction_id, current_user, db)
+
+    if file.content_type not in ALLOWED_CONTENT_TYPES:
+        raise HTTPException(status_code=400, detail=f"Unsupported file type: {file.content_type}. Allowed: images or PDF.")
+
+    data = file.file.read()
+    if len(data) > MAX_RECEIPT_BYTES:
+        raise HTTPException(status_code=400, detail="File too large (max 10MB)")
+    if len(data) == 0:
+        raise HTTPException(status_code=400, detail="Empty file")
+
+    storage_path = save_receipt(transaction_id, file.filename, data)
+
+    receipt = TransactionReceipt(
+        entity_id=tx.entity_id,
+        transaction_id=transaction_id,
+        uploaded_by_user_id=current_user.user_id,
+        filename=file.filename or "receipt",
+        content_type=file.content_type,
+        size_bytes=len(data),
+        storage_path=storage_path
+    )
+    db.add(receipt)
+    db.commit()
+    db.refresh(receipt)
+
+    return {
+        "id": receipt.id,
+        "filename": receipt.filename,
+        "content_type": receipt.content_type,
+        "size_bytes": receipt.size_bytes,
+        "uploaded_by_name": current_user.name,
+        "created_at": receipt.created_at.isoformat()
+    }
+
+
+@router.get("/{transaction_id}/receipts", response_model=List[ReceiptOut])
+def list_receipts(
+    transaction_id: str,
+    current_user: UserContext = Depends(get_current_user_context),
+    db: Session = Depends(get_db)
+):
+    _get_transaction_for_receipt_access(transaction_id, current_user, db)
+
+    receipts = db.query(TransactionReceipt).filter(
+        TransactionReceipt.transaction_id == transaction_id
+    ).order_by(TransactionReceipt.created_at.desc()).all()
+
+    return [
+        {
+            "id": r.id,
+            "filename": r.filename,
+            "content_type": r.content_type,
+            "size_bytes": r.size_bytes,
+            "uploaded_by_name": r.uploaded_by.name,
+            "created_at": r.created_at.isoformat()
+        }
+        for r in receipts
+    ]
+
+
+@router.get("/receipts/{receipt_id}/file")
+def download_receipt(
+    receipt_id: str,
+    current_user: UserContext = Depends(get_current_user_context),
+    db: Session = Depends(get_db)
+):
+    receipt = db.query(TransactionReceipt).filter(
+        TransactionReceipt.id == receipt_id,
+        TransactionReceipt.entity_id == current_user.active_entity_id
+    ).first()
+    if not receipt:
+        raise HTTPException(status_code=404, detail="Receipt not found")
+
+    _get_transaction_for_receipt_access(receipt.transaction_id, current_user, db)
+
+    try:
+        data = read_receipt(receipt.storage_path)
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="Receipt file is missing from storage")
+
+    return StreamingResponse(
+        io.BytesIO(data),
+        media_type=receipt.content_type,
+        headers={"Content-Disposition": f'inline; filename="{receipt.filename}"'}
+    )
+
+
+@router.delete("/receipts/{receipt_id}")
+def delete_receipt_endpoint(
+    receipt_id: str,
+    current_user: UserContext = Depends(get_current_user_context),
+    db: Session = Depends(get_db)
+):
+    receipt = db.query(TransactionReceipt).filter(
+        TransactionReceipt.id == receipt_id,
+        TransactionReceipt.entity_id == current_user.active_entity_id
+    ).first()
+    if not receipt:
+        raise HTTPException(status_code=404, detail="Receipt not found")
+
+    _get_transaction_for_receipt_access(receipt.transaction_id, current_user, db)
+
+    if receipt.uploaded_by_user_id != current_user.user_id and not current_user.is_admin:
+        raise HTTPException(status_code=403, detail="Only the uploader or an admin can delete this receipt")
+
+    delete_receipt(receipt.storage_path)
+    db.delete(receipt)
+    db.commit()
+    return {"message": "Receipt deleted"}

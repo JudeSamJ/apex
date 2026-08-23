@@ -13,6 +13,7 @@ from app.bills.payment_rail import MockPaymentRailClient
 from app.bills.payment_rail import get_payment_rail_client
 from app.approvals.engine import ApprovalEngine
 from app.idempotency.service import begin_idempotent, complete_idempotent, IdempotencyConflict, IdempotentReplay
+from app.money import MoneyOut
 
 router = APIRouter(prefix="/api/reimbursements", tags=["reimbursements"])
 payment_rail = get_payment_rail_client()
@@ -43,7 +44,7 @@ class ReimbursementCreate(BaseModel):
 
 class LineItemOut(BaseModel):
     description: str
-    amount: Decimal
+    amount: MoneyOut
     gl_account_id: Optional[str] = None
     receipt_url: Optional[str] = None
 
@@ -55,14 +56,14 @@ class TripOut(BaseModel):
     purpose: str
     mileage_rate: Decimal
     total_miles: Decimal
-    computed_amount: Decimal
+    computed_amount: MoneyOut
     waypoints: List[WaypointOut]
 
 class ReimbursementOut(BaseModel):
     id: str
     type: str
     status: str
-    total_amount: Decimal
+    total_amount: MoneyOut
     requester_name: str
     department_name: str
     approval_id: Optional[str] = None

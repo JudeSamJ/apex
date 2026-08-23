@@ -1,6 +1,6 @@
 import uuid
 from datetime import datetime
-from sqlalchemy import Column, String, ForeignKey, Numeric, DateTime, JSON
+from sqlalchemy import Column, String, ForeignKey, Numeric, DateTime, JSON, Integer
 from sqlalchemy.orm import relationship
 from app.database import Base
 
@@ -32,6 +32,10 @@ class Card(Base):
     masked_pan = Column(String(30), nullable=False)  # e.g., **** **** **** 4242
     card_token = Column(String(255), nullable=False)
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    # Per-card velocity controls, admin-configurable, on top of the spend
+    # program's cumulative limit and MCC allowlist. Null means "no cap".
+    single_txn_limit = Column(Numeric(18, 4), nullable=True)  # max amount for any one swipe
+    daily_txn_count_limit = Column(Integer, nullable=True)  # max HELD/SETTLED swipes per UTC calendar day
 
     entity = relationship("Entity")
     owner = relationship("User")

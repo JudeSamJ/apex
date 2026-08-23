@@ -9,6 +9,7 @@ from app.entities_rbac.auth import get_current_user_context, UserContext
 from app.cards.models import SpendProgram, Card, CardRequest
 from app.cards.partner_client import get_issuing_client
 from app.approvals.engine import ApprovalEngine
+from app.money import MoneyOut
 
 router = APIRouter(prefix="/api/cards", tags=["cards"])
 partner_client = get_issuing_client()
@@ -22,7 +23,7 @@ class SpendProgramCreate(BaseModel):
 class SpendProgramOut(BaseModel):
     id: str
     name: str
-    limit_amount: Decimal
+    limit_amount: MoneyOut
     limit_type: str
     allowed_mcc: Optional[List[str]] = None
 
@@ -38,7 +39,7 @@ class CardRequestOut(BaseModel):
     department_name: str
     spend_program_name: str
     type: str
-    limit_amount: Decimal
+    limit_amount: MoneyOut
     currency: str
     status: str
     created_at: str
@@ -49,11 +50,17 @@ class CardOut(BaseModel):
     department_name: str
     spend_program_name: str
     type: str
-    limit_amount: Decimal
+    limit_amount: MoneyOut
     currency: str
     status: str
     masked_pan: str
     created_at: str
+    single_txn_limit: Optional[MoneyOut] = None
+    daily_txn_count_limit: Optional[int] = None
+
+class CardControlsUpdate(BaseModel):
+    single_txn_limit: Optional[Decimal] = None
+    daily_txn_count_limit: Optional[int] = None
 
 @router.post("/spend-programs", response_model=SpendProgramOut)
 def create_spend_program(
@@ -343,9 +350,65 @@ def list_cards(
             "currency": c.currency,
             "status": c.status,
             "masked_pan": c.masked_pan,
-            "created_at": c.created_at.isoformat()
+            "created_at": c.created_at.isoformat(),
+            "single_txn_limit": c.single_txn_limit,
+            "daily_txn_count_limit": c.daily_txn_count_limit
         })
     return out
+
+@router.patch("/{card_id}/controls", response_model=CardOut)
+def update_card_controls(
+    card_id: str,
+    body: CardControlsUpdate,
+    current_user: UserContext = Depends(get_current_user_context),
+    db: Session = Depends(get_db)
+):
+    """Admin-only: set (or clear, by passing null) per-card velocity
+    controls on top of the spend program's cumulative limit/MCC allowlist."""
+    if not current_user.is_admin:
+        raise HTTPException(status_code=403, detail="Only Admins can update card controls")
+
+    card = db.query(Card).filter(
+        Card.id == card_id,
+        Card.entity_id == current_user.active_entity_id
+    ).first()
+    if not card:
+        raise HTTPException(status_code=404, detail="Card not found")
+
+    if body.single_txn_limit is not None and body.single_txn_limit <= 0:
+        raise HTTPException(status_code=400, detail="single_txn_limit must be positive")
+    if body.daily_txn_count_limit is not None and body.daily_txn_count_limit <= 0:
+        raise HTTPException(status_code=400, detail="daily_txn_count_limit must be positive")
+
+    card.single_txn_limit = body.single_txn_limit
+    card.daily_txn_count_limit = body.daily_txn_count_limit
+
+    from app.audit_logs.router import log_audit_action
+    log_audit_action(
+        db=db,
+        entity_id=card.entity_id,
+        user_id=current_user.user_id,
+        action="CARD_CONTROLS_UPDATE",
+        details={"card_id": card.id, "single_txn_limit": str(body.single_txn_limit) if body.single_txn_limit else None, "daily_txn_count_limit": body.daily_txn_count_limit}
+    )
+
+    db.commit()
+    db.refresh(card)
+
+    return {
+        "id": card.id,
+        "owner_name": card.owner.name,
+        "department_name": card.department.name,
+        "spend_program_name": card.spend_program.name,
+        "type": card.type,
+        "limit_amount": card.limit_amount,
+        "currency": card.currency,
+        "status": card.status,
+        "masked_pan": card.masked_pan,
+        "created_at": card.created_at.isoformat(),
+        "single_txn_limit": card.single_txn_limit,
+        "daily_txn_count_limit": card.daily_txn_count_limit
+    }
 
 @router.post("/{card_id}/freeze", response_model=CardOut)
 def freeze_card(

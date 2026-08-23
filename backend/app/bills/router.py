@@ -16,6 +16,7 @@ from app.cards.models import Card
 from app.bills.payment_rail import get_payment_rail_client
 from app.idempotency.service import begin_idempotent, complete_idempotent, IdempotencyConflict, IdempotentReplay
 from app.screening.service import screen_subject
+from app.money import MoneyOut
 
 router = APIRouter(prefix="/api/bills", tags=["bills"])
 payment_rail = get_payment_rail_client()
@@ -43,7 +44,7 @@ class BillCreate(BaseModel):
 
 class BillLineItemOut(BaseModel):
     description: str
-    amount: Decimal
+    amount: MoneyOut
     gl_account_id: Optional[str] = None
 
 class BillOut(BaseModel):
@@ -52,7 +53,7 @@ class BillOut(BaseModel):
     vendor_name: str
     status: str
     due_date: str
-    total_amount: Decimal
+    total_amount: MoneyOut
     payment_method: str
     approval_id: Optional[str] = None
     line_items: List[BillLineItemOut]

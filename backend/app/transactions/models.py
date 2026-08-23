@@ -1,6 +1,6 @@
 import uuid
 from datetime import datetime
-from sqlalchemy import Column, String, ForeignKey, Numeric, DateTime
+from sqlalchemy import Column, String, ForeignKey, Numeric, DateTime, Integer
 from sqlalchemy.orm import relationship
 from app.database import Base
 
@@ -38,3 +38,23 @@ class PipelineEvent(Base):
     event_type = Column(String(50), nullable=False)
     source_event_id = Column(String(36), nullable=False)
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+
+class TransactionReceipt(Base):
+    """A receipt (image/PDF) attached to a transaction for expense
+    substantiation. Multiple receipts per transaction are allowed (e.g. a
+    multi-page paper receipt photographed in parts)."""
+    __tablename__ = "transaction_receipts"
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    entity_id = Column(String(36), ForeignKey("entities.id"), nullable=False)
+    transaction_id = Column(String(36), ForeignKey("transactions.id"), nullable=False)
+    uploaded_by_user_id = Column(String(36), ForeignKey("users.id"), nullable=False)
+    filename = Column(String(255), nullable=False)
+    content_type = Column(String(100), nullable=False)
+    size_bytes = Column(Integer, nullable=False)
+    storage_path = Column(String(500), nullable=False)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+    transaction = relationship("Transaction")
+    uploaded_by = relationship("User")

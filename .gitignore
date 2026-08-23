@@ -1,0 +1,6 @@
+# User-uploaded receipt files (local disk storage) — never belongs in git.
+backend/uploads/
+
+# Python bytecode caches.
+__pycache__/
+*.pyc

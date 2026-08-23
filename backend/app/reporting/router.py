@@ -17,6 +17,7 @@ from app.insights.models import Insight
 from app.approvals.models import Approval, ApprovalStep
 from app.bills.models import Bill, BillLineItem
 from app.reimbursements.models import Reimbursement
+from app.money import MoneyOut
 
 router = APIRouter(prefix="/api/reporting", tags=["reporting"])
 
@@ -31,16 +32,16 @@ class BudgetOut(BaseModel):
     department_name: Optional[str] = None
     category: Optional[str] = None
     period: str
-    amount: Decimal
+    amount: MoneyOut
 
 class BudgetCompareOut(BaseModel):
     id: str
     department_name: Optional[str] = None
     category: Optional[str] = None
     period: str
-    budgeted_amount: Decimal
-    actual_amount: Decimal
-    remaining_amount: Decimal
+    budgeted_amount: MoneyOut
+    actual_amount: MoneyOut
+    remaining_amount: MoneyOut
 
 @router.get("/dashboard")
 def get_dashboard_metrics(

@@ -42,7 +42,7 @@ def init_db():
     from app.entities_rbac.models import Entity, Department, Location, User, Role, UserRole
     from app.ledger.models import LedgerEntry, BalanceSnapshot
     from app.cards.models import SpendProgram, Card, CardRequest
-    from app.transactions.models import Transaction, PipelineEvent
+    from app.transactions.models import Transaction, PipelineEvent, TransactionReceipt
     from app.approvals.models import Approval, ApprovalStep, ApprovalRule
     from app.bills.models import Vendor, VendorContact, VendorBankAccount, Bill, BillLineItem, BillPayment
     from app.reimbursements.models import Reimbursement, ReimbursementLineItem, MileageTrip, TripWaypoint
