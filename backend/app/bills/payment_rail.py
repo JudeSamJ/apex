@@ -10,9 +10,14 @@ import dwollav2
 
 class PaymentRailClient:
     """Abstract interface for payment rail operations."""
-    
+
     def initiate_transfer(self, bank_account_id: str, amount: Decimal) -> str:
         """Initiate a bank transfer and return a transfer reference."""
+        raise NotImplementedError
+
+    def get_transfer_status(self, transfer_ref: str) -> str:
+        """Check the current provider-side status of a transfer (used by
+        reconciliation to detect drift against our local ledger state)."""
         raise NotImplementedError
 
 
@@ -29,6 +34,17 @@ class MockPaymentRailClient(PaymentRailClient):
         rand_hex = uuid.uuid4().hex[:12]
         transfer_ref = f"ref_ach_{rand_hex}"
         return transfer_ref
+
+    def get_transfer_status(self, transfer_ref: str) -> str:
+        """Deterministic mock status, so reconciliation can be demoed/tested
+        without a real rail: a transfer_ref containing FAIL_TEST or
+        CANCEL_TEST reports that outcome, everything else reports processed."""
+        self._delay()
+        if "FAIL_TEST" in transfer_ref:
+            return "failed"
+        if "CANCEL_TEST" in transfer_ref:
+            return "cancelled"
+        return "processed"
 
 
 class DwollaPaymentRailClient(PaymentRailClient):

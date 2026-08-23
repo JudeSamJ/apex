@@ -463,3 +463,103 @@ def test_stripe_dispute_webhook_creates_and_resolves_dispute(monkeypatch, db_ses
     db.refresh(dispute)
     assert dispute.status == "WON"
 
+def test_reconciliation_flags_drift_between_local_and_provider_status(db_session):
+    db = db_session
+    from app.bills.models import Bill, BillPayment, Vendor
+    from app.reimbursements.models import Reimbursement
+    from app.reconciliation.models import ReconciliationRun, ReconciliationDiscrepancy
+
+    role = db.query(Role).filter(Role.id == "ADMIN").first()
+    if not role:
+        db.add(Role(id="ADMIN", name="Admin"))
+        db.commit()
+
+    entity = Entity(id="recon-ent-1", name="Reconciliation Entity", onboarding_status="APPROVED")
+    dept = Department(id="recon-dept-1", entity_id=entity.id, name="Recon Dept")
+    admin_user = User(
+        id="recon-admin-1",
+        name="Recon Admin",
+        email="recon-admin@apex.com",
+        entity_id=entity.id,
+        password_hash=get_password_hash("password123")
+    )
+    db.add_all([entity, dept, admin_user])
+    db.flush()
+    db.add(UserRole(user_id=admin_user.id, role_id="ADMIN", entity_id=entity.id))
+
+    vendor = Vendor(id="recon-vend-1", entity_id=entity.id, name="Recon Vendor")
+    # A bill we believe is PAID, but whose transfer_ref the mock payment rail
+    # reports as "failed" — this must surface as a discrepancy.
+    drifted_bill = Bill(
+        id="recon-bill-drift",
+        entity_id=entity.id,
+        department_id=dept.id,
+        vendor_id=vendor.id,
+        status="PAID",
+        due_date=datetime(2026, 12, 31),
+        total_amount=Decimal("300.00"),
+        payment_method="BANK_TRANSFER"
+    )
+    drifted_payment = BillPayment(
+        id="recon-pmt-drift",
+        entity_id=entity.id,
+        bill_id=drifted_bill.id,
+        transfer_ref="ref_ach_FAIL_TEST_1"
+    )
+    # A bill that's correctly PAID and matches the rail — must NOT be flagged.
+    clean_bill = Bill(
+        id="recon-bill-clean",
+        entity_id=entity.id,
+        department_id=dept.id,
+        vendor_id=vendor.id,
+        status="PAID",
+        due_date=datetime(2026, 12, 31),
+        total_amount=Decimal("150.00"),
+        payment_method="BANK_TRANSFER"
+    )
+    clean_payment = BillPayment(
+        id="recon-pmt-clean",
+        entity_id=entity.id,
+        bill_id=clean_bill.id,
+        transfer_ref="ref_ach_ok_1"
+    )
+    drifted_reimbursement = Reimbursement(
+        id="recon-reimb-drift",
+        entity_id=entity.id,
+        user_id=admin_user.id,
+        department_id=dept.id,
+        type="OUT_OF_POCKET",
+        status="REIMBURSED",
+        total_amount=Decimal("80.00"),
+        transfer_ref="ref_ach_CANCEL_TEST_1"
+    )
+    db.add_all([vendor, drifted_bill, drifted_payment, clean_bill, clean_payment, drifted_reimbursement])
+    db.commit()
+
+    response = client.post(
+        "/api/auth/token",
+        data={"username": "recon-admin@apex.com", "password": "password123"}
+    )
+    assert response.status_code == 200
+    headers = {"Authorization": f"Bearer {response.json()['access_token']}", "X-Entity-Id": entity.id}
+
+    run_response = client.post("/api/reconciliation/run", headers=headers)
+    assert run_response.status_code == 200
+    run_body = run_response.json()
+    assert run_body["status"] == "COMPLETED"
+    assert run_body["checked_count"] == 3
+    assert run_body["discrepancy_count"] == 2
+
+    discrepancies_response = client.get(
+        f"/api/reconciliation/runs/{run_body['id']}/discrepancies", headers=headers
+    )
+    assert discrepancies_response.status_code == 200
+    discrepancies = discrepancies_response.json()
+    assert len(discrepancies) == 2
+    subject_ids = {d["subject_id"] for d in discrepancies}
+    assert subject_ids == {"recon-pmt-drift", "recon-reimb-drift"}
+
+    runs_response = client.get("/api/reconciliation/runs", headers=headers)
+    assert runs_response.status_code == 200
+    assert len(runs_response.json()) == 1
+

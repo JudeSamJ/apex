@@ -1,6 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.database import init_db
+from app.observability import configure_logging, init_sentry, RequestIDMiddleware
 from app.entities_rbac.router import router as auth_router
 from app.cards.router import router as cards_router
 from app.transactions.router import router as transactions_router
@@ -17,8 +18,14 @@ from app.plaid.router import router as plaid_router
 from app.qbo.router import router as qbo_router
 from app.screening.router import router as screening_router
 from app.disputes.router import router as disputes_router
+from app.reconciliation.router import router as reconciliation_router
+
+configure_logging()
+init_sentry()
 
 app = FastAPI(title="Ramp Clone B2B Fintech Platform API", version="1.0.0")
+
+app.add_middleware(RequestIDMiddleware)
 
 # CORS middleware configuration
 app.add_middleware(
@@ -53,3 +60,4 @@ app.include_router(plaid_router)
 app.include_router(qbo_router)
 app.include_router(screening_router)
 app.include_router(disputes_router)
+app.include_router(reconciliation_router)
