@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from typing import List, Optional
@@ -32,7 +32,10 @@ def _to_out(n: Notification) -> dict:
 
 @router.get("", response_model=List[NotificationOut])
 def list_notifications(
+    response: Response,
     unread_only: bool = False,
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
     current_user: UserContext = Depends(get_current_user_context),
     db: Session = Depends(get_db),
 ):
@@ -42,7 +45,8 @@ def list_notifications(
     )
     if unread_only:
         query = query.filter(Notification.read.is_(False))
-    rows = query.order_by(Notification.created_at.desc()).all()
+    response.headers["X-Total-Count"] = str(query.count())
+    rows = query.order_by(Notification.created_at.desc()).limit(limit).offset(offset).all()
     return [_to_out(r) for r in rows]
 
 
