@@ -5,6 +5,8 @@ from typing import Dict, Any, List
 
 import httpx
 
+from app.secrets.provider import get_secret
+
 logger = logging.getLogger(__name__)
 
 
@@ -20,7 +22,7 @@ class ComplyAdvantageClient(SanctionsScreeningClient):
     """Real ComplyAdvantage Search API integration for OFAC/sanctions/PEP screening."""
 
     def __init__(self):
-        self.api_key = os.getenv("COMPLYADVANTAGE_API_KEY")
+        self.api_key = get_secret("COMPLYADVANTAGE_API_KEY")
         if not self.api_key:
             raise ValueError("COMPLYADVANTAGE_API_KEY environment variable must be set")
 

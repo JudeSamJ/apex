@@ -8,6 +8,7 @@ from typing import List, Optional
 from app.database import get_db
 from app.entities_rbac.auth import get_current_user_context, UserContext
 from app.disputes.models import CardDispute
+from app.secrets.provider import get_secret
 
 logger = logging.getLogger(__name__)
 
@@ -91,7 +92,7 @@ def submit_evidence(
     if os.getenv("USE_REAL_ISSUING", "False").lower() in ["true", "1"]:
         try:
             import stripe
-            stripe.api_key = os.getenv("STRIPE_SECRET_KEY")
+            stripe.api_key = get_secret("STRIPE_SECRET_KEY")
             stripe.issuing.Dispute.modify(
                 dispute.stripe_dispute_id,
                 evidence={"reason": dispute.reason or "other", "explanation": body.evidence},

@@ -7,6 +7,8 @@ from typing import Dict, Any, Optional
 
 import dwollav2
 
+from app.secrets.provider import get_secret
+
 
 class PaymentRailClient:
     """Abstract interface for payment rail operations."""
@@ -51,8 +53,8 @@ class DwollaPaymentRailClient(PaymentRailClient):
     """Real Dwolla Sandbox integration for bank transfers (ACH)."""
     
     def __init__(self):
-        self.app_key = os.getenv("DWOLLA_APP_KEY")
-        self.app_secret = os.getenv("DWOLLA_APP_SECRET")
+        self.app_key = get_secret("DWOLLA_APP_KEY")
+        self.app_secret = get_secret("DWOLLA_APP_SECRET")
         
         if not self.app_key or not self.app_secret:
             raise ValueError("DWOLLA_APP_KEY and DWOLLA_APP_SECRET environment variables must be set")

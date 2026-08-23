@@ -5,6 +5,8 @@ from decimal import Decimal
 
 import httpx
 
+from app.secrets.provider import get_secret
+
 logger = logging.getLogger(__name__)
 
 # Currencies this platform recognizes. Kept intentionally small — every
@@ -24,7 +26,7 @@ class ExchangeRateAPIClient(FXRateClient):
     """Real FX rates via exchangerate-api.com's v6 API."""
 
     def __init__(self):
-        self.api_key = os.getenv("EXCHANGE_RATE_API_KEY")
+        self.api_key = get_secret("EXCHANGE_RATE_API_KEY")
         if not self.api_key:
             raise ValueError("EXCHANGE_RATE_API_KEY environment variable must be set")
         self.base_url = "https://v6.exchangerate-api.com/v6"

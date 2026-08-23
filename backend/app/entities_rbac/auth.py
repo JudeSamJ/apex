@@ -1,3 +1,4 @@
+import logging
 from datetime import datetime, timedelta
 from typing import Optional, List, Set
 from fastapi import Depends, HTTPException, status, Header
@@ -9,10 +10,38 @@ import os
 
 from app.database import get_db
 from app.entities_rbac.models import User, UserRole, Entity, OnboardingStatus
+from app.secrets.provider import get_secret
 
-JWT_SECRET = os.getenv("JWT_SECRET", "supersecretkey123")
+_INSECURE_DEFAULT_JWT_SECRET = "supersecretkey123"
+
+JWT_SECRET = get_secret("JWT_SECRET", _INSECURE_DEFAULT_JWT_SECRET)
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24
+
+if JWT_SECRET == _INSECURE_DEFAULT_JWT_SECRET:
+    # This key signs every access token in the app — anyone who knows it can
+    # forge a valid login for any user. The hardcoded fallback exists only so
+    # local dev/tests work with zero setup; it must never reach an
+    # environment that talks to a real provider.
+    _any_real_provider = any(
+        os.getenv(flag, "False").lower() in ["true", "1"]
+        for flag in [
+            "USE_REAL_ISSUING", "USE_REAL_PAYMENT_RAIL", "USE_REAL_PLAID",
+            "USE_REAL_DIDIT", "USE_REAL_QBO", "USE_REAL_SCREENING",
+            "USE_REAL_EMAIL", "USE_REAL_SSO", "USE_REAL_FX",
+        ]
+    )
+    if _any_real_provider:
+        logging.getLogger(__name__).error(
+            "JWT_SECRET is unset and falling back to the built-in insecure default, "
+            "while at least one USE_REAL_* provider flag is enabled. Set JWT_SECRET "
+            "(directly or via a real SECRETS_PROVIDER) before this reaches production."
+        )
+    else:
+        logging.getLogger(__name__).warning(
+            "JWT_SECRET is unset; using the built-in insecure default. Fine for local "
+            "dev/tests, but set a real JWT_SECRET before deploying anywhere reachable."
+        )
 
 pwd_context = CryptContext(schemes=["sha256_crypt"], deprecated="auto")
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="api/auth/token", auto_error=False)

@@ -4,6 +4,8 @@ import smtplib
 from abc import ABC, abstractmethod
 from email.message import EmailMessage
 
+from app.secrets.provider import get_secret
+
 logger = logging.getLogger(__name__)
 
 
@@ -27,8 +29,8 @@ class SMTPEmailClient(EmailClient):
     def __init__(self):
         self.host = os.getenv("SMTP_HOST")
         self.port = int(os.getenv("SMTP_PORT", "587"))
-        self.username = os.getenv("SMTP_USERNAME")
-        self.password = os.getenv("SMTP_PASSWORD")
+        self.username = get_secret("SMTP_USERNAME")
+        self.password = get_secret("SMTP_PASSWORD")
         self.from_email = os.getenv("SMTP_FROM_EMAIL", self.username or "")
 
         if not self.host:

@@ -4,13 +4,15 @@ import httpx
 from typing import Dict, Any, List, Optional
 from datetime import datetime
 
+from app.secrets.provider import get_secret
+
 
 class QuickBooksOnlineClient:
     """Real QuickBooks Online Sandbox integration for accounting/ERP sync."""
-    
+
     def __init__(self):
-        self.client_id = os.getenv("QBO_CLIENT_ID")
-        self.client_secret = os.getenv("QBO_CLIENT_SECRET")
+        self.client_id = get_secret("QBO_CLIENT_ID")
+        self.client_secret = get_secret("QBO_CLIENT_SECRET")
         self.redirect_uri = os.getenv("QBO_REDIRECT_URI", "http://localhost:5173/qbo-callback")
         
         if not self.client_id or not self.client_secret:

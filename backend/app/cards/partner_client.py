@@ -7,6 +7,8 @@ from abc import ABC, abstractmethod
 from typing import Dict, Any
 import stripe
 
+from app.secrets.provider import get_secret
+
 
 class IssuingPartnerClient(ABC):
     @abstractmethod
@@ -77,7 +79,7 @@ class StripeIssuingClient(IssuingPartnerClient):
     """Real Stripe Issuing integration using test mode."""
     
     def __init__(self):
-        self.api_key = os.getenv("STRIPE_SECRET_KEY")
+        self.api_key = get_secret("STRIPE_SECRET_KEY")
         if not self.api_key:
             raise ValueError("STRIPE_SECRET_KEY environment variable not set")
         

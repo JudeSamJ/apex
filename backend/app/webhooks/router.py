@@ -11,14 +11,15 @@ from app.database import get_db
 from app.ledger.client import LedgerClient
 from app.transactions.pipeline_events import emit_pipeline_event
 from app.kyc.client import get_didit_client
+from app.secrets.provider import get_secret
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/webhooks", tags=["webhooks"])
 
-STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET", "")
-DWOLLA_WEBHOOK_SECRET = os.getenv("DWOLLA_WEBHOOK_SECRET", "")
-DIDIT_WEBHOOK_SECRET = os.getenv("DIDIT_WEBHOOK_SECRET", "")
+STRIPE_WEBHOOK_SECRET = get_secret("STRIPE_WEBHOOK_SECRET", "")
+DWOLLA_WEBHOOK_SECRET = get_secret("DWOLLA_WEBHOOK_SECRET", "")
+DIDIT_WEBHOOK_SECRET = get_secret("DIDIT_WEBHOOK_SECRET", "")
 
 
 def _verify_hmac_signature(payload: bytes, signature: str, secret: str) -> bool:
@@ -438,7 +439,7 @@ def _resolve_card_token_for_issuing_transaction(transaction_ref: str) -> Optiona
     """
     try:
         import stripe
-        stripe.api_key = os.getenv("STRIPE_SECRET_KEY")
+        stripe.api_key = get_secret("STRIPE_SECRET_KEY")
         if not stripe.api_key:
             return None
         txn = stripe.issuing.Transaction.retrieve(transaction_ref)

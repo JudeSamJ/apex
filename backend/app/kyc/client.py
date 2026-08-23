@@ -4,12 +4,14 @@ import httpx
 from typing import Dict, Any, Optional
 from datetime import datetime
 
+from app.secrets.provider import get_secret
+
 
 class DiditClient:
     """Real Didit integration for KYC/KYB entity verification (free tier)."""
-    
+
     def __init__(self):
-        self.api_key = os.getenv("DIDIT_API_KEY")
+        self.api_key = get_secret("DIDIT_API_KEY")
         
         if not self.api_key:
             raise ValueError("DIDIT_API_KEY environment variable must be set")

@@ -9,6 +9,8 @@ from urllib.parse import urlencode
 
 import httpx
 
+from app.secrets.provider import get_secret
+
 logger = logging.getLogger(__name__)
 
 
@@ -36,8 +38,8 @@ class WorkOSSSOClient(SSOClient):
     implementing SAML directly."""
 
     def __init__(self):
-        self.api_key = os.getenv("WORKOS_API_KEY")
-        self.client_id = os.getenv("WORKOS_CLIENT_ID")
+        self.api_key = get_secret("WORKOS_API_KEY")
+        self.client_id = get_secret("WORKOS_CLIENT_ID")
         if not self.api_key or not self.client_id:
             raise ValueError("WORKOS_API_KEY and WORKOS_CLIENT_ID environment variables must be set")
 

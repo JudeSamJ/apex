@@ -1,8 +1,11 @@
 import os
 from sqlalchemy import create_engine, text, event
 from sqlalchemy.orm import declarative_base, sessionmaker
+from app.secrets.provider import get_secret
 
-DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./ramp_clone.db")
+# DATABASE_URL commonly embeds credentials (postgresql://user:pass@host/db),
+# so it goes through the secrets provider rather than a bare os.getenv().
+DATABASE_URL = get_secret("DATABASE_URL", "sqlite:///./ramp_clone.db")
 
 engine = create_engine(
     DATABASE_URL,

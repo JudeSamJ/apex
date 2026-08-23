@@ -11,13 +11,15 @@ from plaid.model.link_token_create_request_user import LinkTokenCreateRequestUse
 from plaid.model.item_public_token_exchange_request import ItemPublicTokenExchangeRequest
 from plaid.model.accounts_get_request import AccountsGetRequest
 
+from app.secrets.provider import get_secret
+
 
 class PlaidClient:
     """Real Plaid Sandbox integration for bank account linking."""
-    
+
     def __init__(self):
-        self.client_id = os.getenv("PLAID_CLIENT_ID")
-        self.secret = os.getenv("PLAID_SECRET")
+        self.client_id = get_secret("PLAID_CLIENT_ID")
+        self.secret = get_secret("PLAID_SECRET")
         
         if not self.client_id or not self.secret:
             raise ValueError("PLAID_CLIENT_ID and PLAID_SECRET environment variables must be set")
