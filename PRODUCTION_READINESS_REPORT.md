@@ -59,6 +59,18 @@ New env vars: `USE_REAL_EMAIL`, `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP
 
 New env vars: `WORKOS_API_KEY`, `WORKOS_CLIENT_ID`, `USE_REAL_SSO` (optional, default off/mock).
 
+### Multi-currency support (this pass)
+
+Auditing the schema for this surfaced a real, pre-existing bug: `BalanceSnapshot` (the running per-entity ledger balance) had `entity_id` as its *sole* primary key despite also carrying a `currency` column — every currency's deltas were landing on the same single row, so a USD hold and a EUR hold got silently summed into one meaningless number. Fixed at the root (composite `(entity_id, currency)` key) as part of this pass, not papered over.
+
+- **Cards can now be issued and spent in a currency different from the entity's policy currency** — `Entity.base_currency` (default `USD`) is what `Card`/`CardRequest`/`SpendProgram`.`limit_amount` and all reporting totals are denominated in; `Card.currency`/`CardRequest.currency` (settable on `POST /api/cards/request`, validated against a supported-currency list, defaults to the entity's base currency) is what the card actually spends in — mirroring how real corporate card issuers work (a card is issued in one currency; spend on it settles in that currency; the *policy limit* is set by finance in the company's own currency).
+- **New `app/fx/` module**: pluggable `FXRateClient` (mock deterministic rate table + real `ExchangeRateAPIClient` via exchangerate-api.com, `USE_REAL_FX`), following the same pattern as every other provider here. `GET /api/fx/currencies` and `GET /api/fx/rate?from_currency=&to_currency=`.
+- **Fixed mixed-currency aggregation everywhere it existed**: card/program spend-limit checks at swipe time, the dashboard's total/by-department/by-category/by-time spend, and budget-vs-actual comparison all used to run a SQL-level `SUM()` across whatever currencies happened to be present — which silently adds incompatible units the moment more than one currency exists. All four now fetch `(amount, currency)` and convert+sum in Python (`fx.service.sum_converted`) before aggregating.
+- **`GET /api/reporting/dashboard`** now includes a `currency` field on `metrics` naming what its totals are denominated in (the entity's `base_currency`).
+  - **Still needed for production:** currency on `Bill`/`Reimbursement` (out of scope this pass — 1099-NEC reporting is inherently USD-only per IRS rules, so this was a deliberate boundary, not an oversight); the `Insight.potential_savings` rollup (`GET /api/insights/savings-summary`) still sums raw amounts across insights that could originate from different-currency cards — same class of bug as the dashboard, not yet fixed; historical FX-rate snapshotting for audit-correct point-in-time reporting (today a rate is always "now," so re-running a report for a past period uses today's rate, not the rate at settlement time); and a real `EXCHANGE_RATE_API_KEY` account.
+
+New env vars: `USE_REAL_FX`, `EXCHANGE_RATE_API_KEY` (optional, default off/mock).
+
 ---
 
 ## Integration Status

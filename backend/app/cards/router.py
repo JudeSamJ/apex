@@ -30,6 +30,7 @@ class CardRequestCreate(BaseModel):
     spend_program_id: str
     type: str  # VIRTUAL, PHYSICAL
     limit_amount: Decimal
+    currency: Optional[str] = None  # defaults to the entity's base_currency
 
 class CardRequestOut(BaseModel):
     id: str
@@ -38,6 +39,7 @@ class CardRequestOut(BaseModel):
     spend_program_name: str
     type: str
     limit_amount: Decimal
+    currency: str
     status: str
     created_at: str
 
@@ -48,6 +50,7 @@ class CardOut(BaseModel):
     spend_program_name: str
     type: str
     limit_amount: Decimal
+    currency: str
     status: str
     masked_pan: str
     created_at: str
@@ -103,6 +106,13 @@ def request_card(
     if request_in.limit_amount > program.limit_amount:
         raise HTTPException(status_code=400, detail="Requested limit exceeds spend program limit")
 
+    from app.entities_rbac.models import Entity
+    from app.fx.client import SUPPORTED_CURRENCIES
+    entity = db.query(Entity).filter(Entity.id == current_user.active_entity_id).first()
+    card_currency = (request_in.currency or entity.base_currency).upper()
+    if card_currency not in SUPPORTED_CURRENCIES:
+        raise HTTPException(status_code=400, detail=f"Unsupported currency; must be one of {sorted(SUPPORTED_CURRENCIES)}")
+
     # Find the user's primary department_id for this entity
     # We retrieve it from UserRole
     from app.entities_rbac.models import UserRole
@@ -127,6 +137,7 @@ def request_card(
         spend_program_id=program.id,
         type=request_in.type,
         limit_amount=request_in.limit_amount,
+        currency=card_currency,
         status="PENDING_APPROVAL"
     )
     db.add(card_req)
@@ -152,6 +163,7 @@ def request_card(
         "spend_program_name": program.name,
         "type": card_req.type,
         "limit_amount": card_req.limit_amount,
+        "currency": card_req.currency,
         "status": card_req.status,
         "created_at": card_req.created_at.isoformat()
     }
@@ -176,6 +188,7 @@ def list_card_requests(
             "spend_program_name": r.spend_program.name,
             "type": r.type,
             "limit_amount": r.limit_amount,
+            "currency": r.currency,
             "status": r.status,
             "created_at": r.created_at.isoformat()
         })
@@ -243,6 +256,7 @@ def approve_card_request(
                 "spend_program_name": card.spend_program.name,
                 "type": card.type,
                 "limit_amount": card.limit_amount,
+                "currency": card.currency,
                 "status": card.status,
                 "masked_pan": card.masked_pan,
                 "created_at": card.created_at.isoformat()
@@ -326,6 +340,7 @@ def list_cards(
             "spend_program_name": c.spend_program.name,
             "type": c.type,
             "limit_amount": c.limit_amount,
+            "currency": c.currency,
             "status": c.status,
             "masked_pan": c.masked_pan,
             "created_at": c.created_at.isoformat()
@@ -373,6 +388,7 @@ def freeze_card(
         "spend_program_name": card.spend_program.name,
         "type": card.type,
         "limit_amount": card.limit_amount,
+        "currency": card.currency,
         "status": card.status,
         "masked_pan": card.masked_pan,
         "created_at": card.created_at.isoformat()
@@ -419,6 +435,7 @@ def unfreeze_card(
         "spend_program_name": card.spend_program.name,
         "type": card.type,
         "limit_amount": card.limit_amount,
+        "currency": card.currency,
         "status": card.status,
         "masked_pan": card.masked_pan,
         "created_at": card.created_at.isoformat()

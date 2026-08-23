@@ -47,8 +47,13 @@ def get_dashboard_metrics(
     current_user: UserContext = Depends(get_current_user_context),
     db: Session = Depends(get_db)
 ):
+    from collections import defaultdict
+    from app.entities_rbac.models import Entity
+    from app.fx.service import sum_converted
+
     entity_id = current_user.active_entity_id
     user_id = current_user.user_id
+    base_currency = db.query(Entity.base_currency).filter(Entity.id == entity_id).scalar() or "USD"
 
     # Filter rules: Employees only see their own cards & transactions
     tx_filter = [Transaction.entity_id == entity_id, Transaction.status.in_(["HELD", "SETTLED"])]
@@ -62,50 +67,57 @@ def get_dashboard_metrics(
         card_filter.append(Card.owner_id == user_id)
         request_filter.append(CardRequest.requester_id == user_id)
 
+    # A SQL-level SUM() can't respect per-row currency, so every aggregation
+    # below fetches (amount, currency) and converts+sums in Python via
+    # sum_converted rather than summing raw amounts across currencies.
+
     # 1. Overall Metrics
-    total_spend = db.query(func.sum(Transaction.amount)).filter(*tx_filter).scalar() or Decimal("0.00")
+    spend_rows = db.query(Transaction.amount, Transaction.currency).filter(*tx_filter).all()
+    total_spend = sum_converted(spend_rows, base_currency)
     active_cards_count = db.query(func.count(Card.id)).filter(*card_filter, Card.status == "ACTIVE").scalar() or 0
     pending_requests_count = db.query(func.count(CardRequest.id)).filter(*request_filter, CardRequest.status == "PENDING_APPROVAL").scalar() or 0
-    
+
     # 2. Spend by Department (Entity wide for admins, otherwise only departments user can access)
-    dept_query = db.query(
-        Department.name,
-        func.sum(Transaction.amount).label("total")
-    ).join(Transaction, Transaction.department_id == Department.id).filter(
-        *tx_filter
-    ).group_by(Department.name).all()
-    
-    spend_by_dept = [{"department": r[0], "amount": float(r[1])} for r in dept_query]
+    dept_rows = db.query(
+        Department.name, Transaction.amount, Transaction.currency
+    ).join(Transaction, Transaction.department_id == Department.id).filter(*tx_filter).all()
+    dept_grouped = defaultdict(list)
+    for name, amount, currency in dept_rows:
+        dept_grouped[name].append((amount, currency))
+    spend_by_dept = [
+        {"department": name, "amount": float(sum_converted(rows, base_currency))}
+        for name, rows in dept_grouped.items()
+    ]
 
     # 3. Spend by Category
-    cat_query = db.query(
-        Transaction.category,
-        func.sum(Transaction.amount).label("total")
-    ).filter(
-        *tx_filter
-    ).group_by(Transaction.category).all()
-    
-    spend_by_category = [{"category": r[0] or "General Spend", "amount": float(r[1])} for r in cat_query]
+    cat_rows = db.query(Transaction.category, Transaction.amount, Transaction.currency).filter(*tx_filter).all()
+    cat_grouped = defaultdict(list)
+    for category, amount, currency in cat_rows:
+        cat_grouped[category or "General Spend"].append((amount, currency))
+    spend_by_category = [
+        {"category": category, "amount": float(sum_converted(rows, base_currency))}
+        for category, rows in cat_grouped.items()
+    ]
 
     # 4. Spend Over Time (daily)
-    time_query = db.query(
-        func.date(Transaction.created_at).label("day"),
-        func.sum(Transaction.amount).label("total")
-    ).filter(
-        *tx_filter
-    ).group_by(func.date(Transaction.created_at)).order_by("day").all()
-    
-    spend_over_time = []
-    for r in time_query:
-        d_val = r[0]
-        d_str = d_val.isoformat() if hasattr(d_val, "isoformat") else str(d_val)
-        spend_over_time.append({"date": d_str, "amount": float(r[1])})
+    time_rows = db.query(
+        func.date(Transaction.created_at).label("day"), Transaction.amount, Transaction.currency
+    ).filter(*tx_filter).all()
+    time_grouped = defaultdict(list)
+    for day, amount, currency in time_rows:
+        day_str = day.isoformat() if hasattr(day, "isoformat") else str(day)
+        time_grouped[day_str].append((amount, currency))
+    spend_over_time = [
+        {"date": day_str, "amount": float(sum_converted(rows, base_currency))}
+        for day_str, rows in sorted(time_grouped.items())
+    ]
 
     return {
         "metrics": {
             "total_spend": float(total_spend),
             "active_cards": active_cards_count,
-            "pending_requests": pending_requests_count
+            "pending_requests": pending_requests_count,
+            "currency": base_currency
         },
         "spend_by_department": spend_by_dept,
         "spend_by_category": spend_by_category,
@@ -148,16 +160,22 @@ def get_budgets_comparison(
     current_user: UserContext = Depends(get_current_user_context),
     db: Session = Depends(get_db)
 ):
+    from app.entities_rbac.models import Entity
+    from app.fx.service import sum_converted
+
     entity_id = current_user.active_entity_id
+    base_currency = db.query(Entity.base_currency).filter(Entity.id == entity_id).scalar() or "USD"
     budgets = db.query(Budget).filter(Budget.entity_id == entity_id).all()
-    
+
     out = []
     for b in budgets:
-        # Calculate actual settled spend matching budget scope and period
-        # Period is "YYYY-MM"
+        # Calculate actual settled spend matching budget scope and period.
+        # Period is "YYYY-MM"; budget.amount is denominated in the entity's
+        # base_currency, so matching transactions (which may be in any
+        # currency their card spends in) are converted before summing.
         period_format = func.strftime('%Y-%m', Transaction.created_at) if db.bind.dialect.name == "sqlite" else func.to_char(Transaction.created_at, 'YYYY-MM')
-        
-        q = db.query(func.sum(Transaction.amount)).filter(
+
+        q = db.query(Transaction.amount, Transaction.currency).filter(
             Transaction.entity_id == entity_id,
             Transaction.status == "SETTLED",
             period_format == b.period
@@ -168,8 +186,8 @@ def get_budgets_comparison(
         if b.category:
             q = q.filter(Transaction.category == b.category)
 
-        actual_spend = q.scalar() or Decimal("0.00")
-        
+        actual_spend = sum_converted(q.all(), base_currency)
+
         dept_name = b.department.name if b.department else "All Departments"
         out.append({
             "id": b.id,

@@ -181,6 +181,7 @@ def trigger_approval_callback(db: Session, approval: Approval):
                 spend_program_id=req.spend_program_id,
                 type=req.type,
                 limit_amount=req.limit_amount,
+                currency=req.currency,
                 status="ACTIVE",
                 masked_pan=res["masked_pan"],
                 card_token=res["card_token"]

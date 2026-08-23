@@ -12,7 +12,8 @@ class LedgerClient:
     @staticmethod
     def _apply_balance_delta(db: Session, entity_id: str, delta: Decimal, currency: str = "USD"):
         snapshot = db.query(BalanceSnapshot).filter(
-            BalanceSnapshot.entity_id == entity_id
+            BalanceSnapshot.entity_id == entity_id,
+            BalanceSnapshot.currency == currency,
         ).with_for_update().first()
         if not snapshot:
             snapshot = BalanceSnapshot(
@@ -224,8 +225,17 @@ class LedgerClient:
         return reversal_entries
 
     @staticmethod
-    def get_balances(db: Session, entity_id: str) -> Decimal:
-        snapshot = db.query(BalanceSnapshot).filter(BalanceSnapshot.entity_id == entity_id).first()
+    def get_balances(db: Session, entity_id: str, currency: str = "USD") -> Decimal:
+        """Returns the running balance in one currency. Use
+        get_balances_by_currency for every currency the entity holds."""
+        snapshot = db.query(BalanceSnapshot).filter(
+            BalanceSnapshot.entity_id == entity_id, BalanceSnapshot.currency == currency
+        ).first()
         if snapshot:
             return snapshot.balance
         return Decimal("0")
+
+    @staticmethod
+    def get_balances_by_currency(db: Session, entity_id: str) -> dict:
+        snapshots = db.query(BalanceSnapshot).filter(BalanceSnapshot.entity_id == entity_id).all()
+        return {s.currency: s.balance for s in snapshots}

@@ -23,6 +23,7 @@ from app.notifications.router import router as notifications_router
 from app.tax_reporting.router import router as tax_reporting_router
 from app.ops.router import router as ops_router
 from app.sso.router import router as sso_router
+from app.fx.router import router as fx_router
 
 configure_logging()
 init_sentry()
@@ -69,3 +70,4 @@ app.include_router(notifications_router)
 app.include_router(tax_reporting_router)
 app.include_router(ops_router)
 app.include_router(sso_router)
+app.include_router(fx_router)

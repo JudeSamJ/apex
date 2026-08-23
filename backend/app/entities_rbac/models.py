@@ -19,6 +19,10 @@ class Entity(Base):
     # KYC/KYB verification fields
     verification_id = Column(String(255), nullable=True)
     verification_url = Column(String(500), nullable=True)
+    # The currency spend policy limits (card/program limit_amount) and
+    # aggregate reporting are denominated in. Individual cards may still
+    # spend in a different currency — see Card.currency.
+    base_currency = Column(String(3), nullable=False, default="USD")
 
     parent = relationship("Entity", remote_side=[id], backref="subsidiaries")
 

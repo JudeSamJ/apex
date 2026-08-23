@@ -1044,3 +1044,117 @@ def test_sso_connection_setup_and_jit_provisioned_login(db_session):
     garbage = client.post("/api/sso/exchange", json={"code": "not-a-real-code"})
     assert garbage.status_code == 401
 
+def test_multi_currency_cards_convert_correctly_for_limits_and_reporting(db_session):
+    db = db_session
+    from app.cards.models import SpendProgram, Card
+    from app.ledger.client import LedgerClient
+
+    role = db.query(Role).filter(Role.id == "ADMIN").first()
+    if not role:
+        db.add(Role(id="ADMIN", name="Admin"))
+        db.commit()
+
+    # Entity's base_currency (USD, the default) is what card/program
+    # limit_amount and reporting totals are denominated in.
+    entity = Entity(id="fx-ent-1", name="FX Entity", onboarding_status="APPROVED")
+    dept = Department(id="fx-dept-1", entity_id=entity.id, name="FX Dept")
+    admin_user = User(
+        id="fx-admin-1",
+        name="FX Admin",
+        email="fx-admin@apex.com",
+        entity_id=entity.id,
+        password_hash=get_password_hash("password123")
+    )
+    db.add_all([entity, dept, admin_user])
+    db.flush()
+    db.add(UserRole(user_id=admin_user.id, role_id="ADMIN", entity_id=entity.id))
+
+    # Program limit set high so only the card-level limits below are what
+    # actually trigger in this test — isolates the card-limit conversion
+    # check from the program-limit one (both use the same sum_converted
+    # code path, so proving one exercises the mechanism).
+    program = SpendProgram(
+        id="fx-sp-1", entity_id=entity.id, name="Global Program",
+        limit_amount=Decimal("1000.00"), limit_type="MONTHLY"
+    )
+    usd_card = Card(
+        id="fx-card-usd", entity_id=entity.id, owner_id=admin_user.id, department_id=dept.id,
+        spend_program_id=program.id, type="VIRTUAL", limit_amount=Decimal("100.00"), currency="USD",
+        status="ACTIVE", masked_pan="**** **** **** 1111", card_token="tok_fx_usd"
+    )
+    eur_card = Card(
+        id="fx-card-eur", entity_id=entity.id, owner_id=admin_user.id, department_id=dept.id,
+        spend_program_id=program.id, type="VIRTUAL", limit_amount=Decimal("200.00"), currency="EUR",
+        status="ACTIVE", masked_pan="**** **** **** 2222", card_token="tok_fx_eur"
+    )
+    db.add_all([program, usd_card, eur_card])
+    db.commit()
+
+    response = client.post("/api/auth/token", data={"username": "fx-admin@apex.com", "password": "password123"})
+    headers = {"Authorization": f"Bearer {response.json()['access_token']}", "X-Entity-Id": entity.id}
+
+    # FX endpoints work and reject unsupported currencies.
+    currencies = client.get("/api/fx/currencies", headers=headers)
+    assert currencies.status_code == 200
+    assert "EUR" in currencies.json()["currencies"]
+
+    rate = client.get("/api/fx/rate", headers=headers, params={"from_currency": "EUR", "to_currency": "USD"})
+    assert rate.status_code == 200
+    assert rate.json()["rate"] > 1.0  # EUR is worth more than 1 USD in the mock table
+
+    bad_rate = client.get("/api/fx/rate", headers=headers, params={"from_currency": "EUR", "to_currency": "XXX"})
+    assert bad_rate.status_code == 400
+
+    # A 150 EUR swipe (~163 USD-equivalent) is within the 200 USD-equivalent
+    # card/program limit and gets held. The stored transaction keeps the
+    # card's own currency, not the base currency.
+    swipe1 = client.post(
+        "/api/transactions/simulate-swipe", headers=headers,
+        json={"card_id": eur_card.id, "amount": 150.0, "merchant_name": "Berlin Cafe", "merchant_mcc": "5812"}
+    )
+    assert swipe1.status_code == 200
+    assert swipe1.json()["status"] == "APPROVED (HELD)"
+
+    from app.transactions.models import Transaction
+    tx1 = db.query(Transaction).filter(Transaction.id == swipe1.json()["transaction_id"]).first()
+    assert tx1.currency == "EUR"
+    assert tx1.amount == Decimal("150.0")
+
+    # A second 150 EUR swipe pushes cumulative USD-equivalent spend
+    # (~326 USD) over the card's 200 USD-equivalent limit — must decline,
+    # proving the limit check converts rather than comparing raw EUR against
+    # a USD-denominated limit.
+    swipe2 = client.post(
+        "/api/transactions/simulate-swipe", headers=headers,
+        json={"card_id": eur_card.id, "amount": 150.0, "merchant_name": "Berlin Cafe", "merchant_mcc": "5812"}
+    )
+    assert swipe2.status_code == 200
+    assert swipe2.json()["status"] == "DECLINED"
+    assert swipe2.json()["decline_reason"] == "Exceeds card limit"
+
+    # A 50 USD swipe on the other card, in the same program, succeeds
+    # independently — proving cards in different currencies coexist
+    # correctly under one shared (converted) program limit.
+    swipe3 = client.post(
+        "/api/transactions/simulate-swipe", headers=headers,
+        json={"card_id": usd_card.id, "amount": 50.0, "merchant_name": "NY Diner", "merchant_mcc": "5812"}
+    )
+    assert swipe3.status_code == 200
+    assert swipe3.json()["status"] == "APPROVED (HELD)"
+
+    # Ledger balances are tracked per currency, not mashed into one number —
+    # the fix to BalanceSnapshot's primary key.
+    balances = LedgerClient.get_balances_by_currency(db, entity.id)
+    assert balances.get("EUR") == Decimal("150.0000")
+    assert balances.get("USD") == Decimal("50.0000")
+
+    # Dashboard total_spend converts the EUR hold into the entity's base
+    # currency (USD) before summing with the USD hold, rather than naively
+    # adding 150 + 50 = 200 across incompatible currencies.
+    dashboard = client.get("/api/reporting/dashboard", headers=headers)
+    assert dashboard.status_code == 200
+    metrics = dashboard.json()["metrics"]
+    assert metrics["currency"] == "USD"
+    expected_total = round(150.0 * (1 / 0.92), 2) + 50.0
+    assert metrics["total_spend"] == expected_total
+

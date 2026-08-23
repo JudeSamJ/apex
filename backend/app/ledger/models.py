@@ -37,11 +37,16 @@ class LedgerEntry(Base):
 
 
 class BalanceSnapshot(Base):
-    """Running balance per entity, updated transactionally on each posting."""
+    """Running balance per entity *per currency*, updated transactionally on
+    each posting. entity_id alone used to be the primary key here despite
+    the currency column, which meant every currency's deltas landed on the
+    same single row — a $100 USD hold and a EUR50 hold would get summed
+    together into one meaningless number. The composite key makes each
+    currency its own row, so multi-currency balances are actually correct."""
     __tablename__ = "balance_snapshots"
     __table_args__ = {"schema": "ledger"}
 
     entity_id = Column(String(36), primary_key=True)
+    currency = Column(String(3), primary_key=True, default="USD")
     balance = Column(Numeric(18, 4), nullable=False, default=0)
-    currency = Column(String(3), nullable=False, default="USD")
     updated_at = Column(DateTime, nullable=False, default=datetime.utcnow)

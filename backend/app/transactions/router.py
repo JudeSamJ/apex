@@ -131,6 +131,11 @@ def simulate_swipe(
     if not card:
         raise HTTPException(status_code=404, detail="Card not found")
 
+    # A card always spends in its own currency — real cards settle in their
+    # billing currency regardless of the merchant's local currency, so the
+    # card itself (not the caller) is the source of truth here.
+    swipe_currency = card.currency
+
     # Helper function to record decline
     def decline(reason: str):
         declined_tx = Transaction(
@@ -139,7 +144,7 @@ def simulate_swipe(
             department_id=card.department_id,
             card_id=card.id,
             amount=swipe.amount,
-            currency="USD",
+            currency=swipe_currency,
             merchant_name=swipe.merchant_name,
             merchant_mcc=swipe.merchant_mcc,
             status="DECLINED",
@@ -157,25 +162,37 @@ def simulate_swipe(
     if card.status == "FROZEN":
         return decline("Card is frozen")
 
+    # Card/program limit_amount is denominated in the entity's base
+    # currency (the policy currency finance sets limits in), which may
+    # differ from what this card actually spends in — so both prior spend
+    # and this swipe must be converted before comparing against a limit.
+    from app.entities_rbac.models import Entity
+    from app.fx.service import convert, sum_converted
+
+    base_currency = db.query(Entity.base_currency).filter(Entity.id == card.entity_id).scalar() or "USD"
+    swipe_amount_in_base = convert(swipe.amount, swipe_currency, base_currency)
+
     # 3. Check Spend Program limits (policy-driven, not hardcoded card-only)
     program = card.spend_program
-    program_cycle_spend = db.query(func.sum(Transaction.amount)).join(
+    program_cycle_rows = db.query(Transaction.amount, Transaction.currency).join(
         Card, Transaction.card_id == Card.id
     ).filter(
         Card.spend_program_id == program.id,
         Transaction.status.in_(["HELD", "SETTLED"])
-    ).scalar() or Decimal("0.0000")
+    ).all()
+    program_cycle_spend = sum_converted(program_cycle_rows, base_currency)
 
-    if program_cycle_spend + swipe.amount > program.limit_amount:
+    if program_cycle_spend + swipe_amount_in_base > program.limit_amount:
         return decline("Exceeds spend program limit")
 
     # 4. Check card-level limit (card limit must be <= program limit)
-    current_cycle_spend = db.query(func.sum(Transaction.amount)).filter(
+    current_cycle_rows = db.query(Transaction.amount, Transaction.currency).filter(
         Transaction.card_id == card.id,
         Transaction.status.in_(["HELD", "SETTLED"])
-    ).scalar() or Decimal("0.0000")
+    ).all()
+    current_cycle_spend = sum_converted(current_cycle_rows, base_currency)
 
-    if current_cycle_spend + swipe.amount > card.limit_amount:
+    if current_cycle_spend + swipe_amount_in_base > card.limit_amount:
         return decline("Exceeds card limit")
 
     # 5. Check allowed MCC categories on spend program
@@ -185,7 +202,7 @@ def simulate_swipe(
     # 6. Success Path - Authorize (HELD)
     transaction_id = str(uuid.uuid4())
     idempotency_key = f"hold_{transaction_id}"
-    
+
     # Write to Ledger Core first
     try:
         LedgerClient.post_hold(
@@ -195,7 +212,7 @@ def simulate_swipe(
             card_id=card.id,
             transaction_id=transaction_id,
             amount=swipe.amount,
-            currency="USD",
+            currency=swipe_currency,
             idempotency_key=idempotency_key,
             source_event_id=transaction_id
         )
@@ -210,7 +227,7 @@ def simulate_swipe(
         department_id=card.department_id,
         card_id=card.id,
         amount=swipe.amount,
-        currency="USD",
+        currency=swipe_currency,
         merchant_name=swipe.merchant_name,
         merchant_mcc=swipe.merchant_mcc,
         status="HELD"

@@ -27,6 +27,7 @@ class Card(Base):
     spend_program_id = Column(String(36), ForeignKey("spend_programs.id"), nullable=False)
     type = Column(String(20), nullable=False)  # VIRTUAL, PHYSICAL
     limit_amount = Column(Numeric(18, 4), nullable=False)
+    currency = Column(String(3), nullable=False, default="USD")  # currency the card actually spends in
     status = Column(String(20), nullable=False, default="ACTIVE")  # ACTIVE, FROZEN
     masked_pan = Column(String(30), nullable=False)  # e.g., **** **** **** 4242
     card_token = Column(String(255), nullable=False)
@@ -47,6 +48,7 @@ class CardRequest(Base):
     spend_program_id = Column(String(36), ForeignKey("spend_programs.id"), nullable=False)
     type = Column(String(20), nullable=False)  # VIRTUAL, PHYSICAL
     limit_amount = Column(Numeric(18, 4), nullable=False)
+    currency = Column(String(3), nullable=False, default="USD")  # currency the card will spend in
     status = Column(String(20), nullable=False, default="PENDING_APPROVAL")  # PENDING_APPROVAL, APPROVED, REJECTED
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
 
