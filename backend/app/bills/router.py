@@ -15,6 +15,7 @@ from app.ledger.client import LedgerClient
 from app.cards.models import Card
 from app.bills.payment_rail import get_payment_rail_client
 from app.idempotency.service import begin_idempotent, complete_idempotent, IdempotencyConflict, IdempotentReplay
+from app.screening.service import screen_subject
 
 router = APIRouter(prefix="/api/bills", tags=["bills"])
 payment_rail = get_payment_rail_client()
@@ -84,6 +85,10 @@ def create_vendor(
     )
     db.add(vendor)
     db.flush()
+
+    # AML/OFAC sanctions screening on the vendor name before any bill can be paid to it
+    screening = screen_subject(db, "VENDOR", vendor.id, vendor.name)
+    vendor.screening_status = screening.status
 
     contact = VendorContact(
         entity_id=current_user.active_entity_id,
@@ -266,6 +271,13 @@ def pay_bill(
 
     if not bill:
         raise HTTPException(status_code=404, detail="Approved bill not found")
+
+    vendor = db.query(Vendor).filter(Vendor.id == bill.vendor_id).first()
+    if vendor and vendor.screening_status == "HIT":
+        raise HTTPException(
+            status_code=403,
+            detail="Vendor is flagged by sanctions screening and cannot be paid until cleared by an admin"
+        )
 
     payment_id = str(uuid.uuid4())
 

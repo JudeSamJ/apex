@@ -39,6 +39,8 @@ def init_db():
     from app.audit_logs.models import AuditLog
     from app.jobs.models import BackgroundJob
     from app.idempotency.models import IdempotencyKey
+    from app.screening.models import SanctionsScreening
+    from app.disputes.models import CardDispute
     
     # Create tables
     Base.metadata.create_all(bind=engine)

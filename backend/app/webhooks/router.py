@@ -5,7 +5,7 @@ import hashlib
 from datetime import datetime
 from fastapi import APIRouter, Request, HTTPException, Header, Depends
 from sqlalchemy.orm import Session
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 
 from app.database import get_db
 from app.ledger.client import LedgerClient
@@ -217,8 +217,17 @@ async def didit_webhook(
     
     # Update entity onboarding status based on verification result
     if status == "approved":
-        entity.onboarding_status = "APPROVED"
-        logger.info(f"Entity {entity.id} onboarding approved via Didit verification {verification_id}")
+        from app.screening.service import latest_screening
+
+        latest = latest_screening(db, "ENTITY", entity.id)
+        if latest and latest.status == "HIT":
+            logger.warning(
+                f"Entity {entity.id} passed Didit KYC but has an open sanctions screening HIT; "
+                "withholding auto-approval pending manual review"
+            )
+        else:
+            entity.onboarding_status = "APPROVED"
+            logger.info(f"Entity {entity.id} onboarding approved via Didit verification {verification_id}")
     elif status == "rejected":
         entity.onboarding_status = "SUSPENDED"
         logger.warning(f"Entity {entity.id} onboarding rejected via Didit verification {verification_id}")
@@ -273,6 +282,13 @@ async def stripe_webhook(
         await handle_transaction_created(db, event_data)
     elif event_type == "issuing_transaction.updated":
         await handle_transaction_updated(db, event_data)
+    elif event_type in (
+        "issuing_dispute.created",
+        "issuing_dispute.updated",
+        "issuing_dispute.funds_reinstated",
+        "issuing_dispute.funds_rescinded",
+    ):
+        await handle_dispute_event(db, event_type, event_data)
     else:
         logger.info(f"Unhandled Stripe event type: {event_type}")
     
@@ -407,6 +423,100 @@ async def handle_transaction_updated(db: Session, tx_data: Dict[str, Any]):
         tx_id = tx_data.get("id")
         logger.info(f"Transaction updated: {tx_id}")
         # Handle refunds or other updates if needed
-        
+
     except Exception as e:
         logger.exception(f"Error handling transaction.updated: {e}")
+
+
+def _resolve_card_token_for_issuing_transaction(transaction_ref: str) -> Optional[str]:
+    """Look up which card a Stripe Issuing transaction belongs to.
+
+    Dispute webhook payloads only carry the transaction ID, not the card, so
+    this makes one Stripe API call to expand it. Returns None (and logs) if
+    Stripe isn't configured or the lookup fails — callers must treat that as
+    "can't attribute this dispute", not as a fatal error.
+    """
+    try:
+        import stripe
+        stripe.api_key = os.getenv("STRIPE_SECRET_KEY")
+        if not stripe.api_key:
+            return None
+        txn = stripe.issuing.Transaction.retrieve(transaction_ref)
+        return txn.get("card")
+    except Exception as e:
+        logger.warning(f"Failed to resolve card for Stripe issuing transaction {transaction_ref}: {e}")
+        return None
+
+
+DISPUTE_STATUS_MAP = {
+    "unsubmitted": "WARNING_NEEDS_RESPONSE",
+    "under_review": "UNDER_REVIEW",
+    "won": "WON",
+    "lost": "LOST",
+    "expired": "EXPIRED",
+}
+
+
+async def handle_dispute_event(db: Session, event_type: str, dispute_data: Dict[str, Any]):
+    """Mirror a Stripe Issuing dispute's lifecycle (created/updated/funds
+    reinstated/rescinded) into the local card_disputes table."""
+    try:
+        from app.disputes.models import CardDispute
+        from app.cards.models import Card
+
+        stripe_dispute_id = dispute_data.get("id")
+        if not stripe_dispute_id:
+            logger.warning(f"Stripe dispute event {event_type} missing dispute id, skipping")
+            return
+
+        amount = dispute_data.get("amount", 0) / 100.0
+        reason = dispute_data.get("reason")
+        raw_status = dispute_data.get("status", "unsubmitted")
+        status = DISPUTE_STATUS_MAP.get(raw_status, raw_status.upper())
+
+        if event_type == "issuing_dispute.funds_reinstated":
+            status = "WON"
+        elif event_type == "issuing_dispute.funds_rescinded":
+            status = "LOST"
+
+        dispute = db.query(CardDispute).filter(CardDispute.stripe_dispute_id == stripe_dispute_id).first()
+
+        entity_id = dispute.entity_id if dispute else None
+        card_id = dispute.card_id if dispute else None
+
+        if not dispute:
+            transaction_ref = dispute_data.get("transaction")
+            if transaction_ref:
+                stripe_card_token = _resolve_card_token_for_issuing_transaction(transaction_ref)
+                if stripe_card_token:
+                    card = db.query(Card).filter(Card.card_token == stripe_card_token).first()
+                    if card:
+                        card_id = card.id
+                        entity_id = card.entity_id
+
+            if not entity_id:
+                logger.warning(
+                    f"Could not resolve entity for Stripe dispute {stripe_dispute_id}; dropping event "
+                    "(no local card match, so it can't be attributed to a tenant)"
+                )
+                return
+
+            dispute = CardDispute(
+                entity_id=entity_id,
+                card_id=card_id,
+                stripe_dispute_id=stripe_dispute_id,
+                amount=amount,
+                reason=reason,
+                status=status,
+            )
+            db.add(dispute)
+        else:
+            dispute.status = status
+            dispute.amount = amount
+            dispute.reason = reason or dispute.reason
+
+        db.commit()
+        logger.info(f"Processed {event_type} for dispute {stripe_dispute_id}: status={status}")
+
+    except Exception as e:
+        logger.exception(f"Error handling {event_type}: {e}")

@@ -17,6 +17,7 @@ from app.entities_rbac.auth import (
     UserContext
 )
 from app.kyc.client import get_didit_client
+from app.screening.service import screen_subject
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
@@ -66,6 +67,9 @@ def register(user_in: UserRegister, db: Session = Depends(get_db)):
     db.add(entity)
     db.flush()
 
+    # AML/OFAC sanctions screening on the entity name, run alongside KYC/KYB
+    screening = screen_subject(db, "ENTITY", entity.id, entity.name)
+
     # Trigger KYC/KYB verification via Didit
     try:
         didit_client = get_didit_client()
@@ -81,8 +85,9 @@ def register(user_in: UserRegister, db: Session = Depends(get_db)):
         entity.verification_url = verification.get("verification_url")
         
         # For demo/sandbox mode, auto-approve after verification creation
-        # In production, this would wait for webhook callback
-        if os.getenv("AUTO_APPROVE_ONBOARDING", "False").lower() in ["true", "1"]:
+        # In production, this would wait for webhook callback. A sanctions
+        # screening HIT always overrides auto-approval — an admin must clear it.
+        if screening.status != "HIT" and os.getenv("AUTO_APPROVE_ONBOARDING", "False").lower() in ["true", "1"]:
             entity.onboarding_status = OnboardingStatus.APPROVED.value
         
         db.commit()

@@ -315,3 +315,151 @@ def test_bill_pay_idempotency_key_prevents_double_payment(db_session):
     )
     assert third.status_code == 404
 
+def test_vendor_sanctions_screening_flags_hit_and_blocks_payment(db_session):
+    db = db_session
+    from app.bills.models import Bill, Vendor
+
+    role = db.query(Role).filter(Role.id == "ADMIN").first()
+    if not role:
+        db.add(Role(id="ADMIN", name="Admin"))
+        db.commit()
+
+    entity = Entity(id="screen-ent-1", name="Screening Entity", onboarding_status="APPROVED")
+    dept = Department(id="screen-dept-1", entity_id=entity.id, name="Screening Dept")
+    admin_user = User(
+        id="screen-admin-1",
+        name="Screen Admin",
+        email="screen-admin@apex.com",
+        entity_id=entity.id,
+        password_hash=get_password_hash("password123")
+    )
+    db.add_all([entity, dept, admin_user])
+    db.flush()
+    db.add(UserRole(user_id=admin_user.id, role_id="ADMIN", entity_id=entity.id))
+    db.commit()
+
+    response = client.post(
+        "/api/auth/token",
+        data={"username": "screen-admin@apex.com", "password": "password123"}
+    )
+    assert response.status_code == 200
+    headers = {"Authorization": f"Bearer {response.json()['access_token']}", "X-Entity-Id": entity.id}
+
+    # A clean vendor name screens CLEAR and stays payable.
+    clean = client.post(
+        "/api/bills/vendors",
+        headers=headers,
+        json={"name": "Acme Supplies", "email": "ap@acme.example", "masked_bank_account": "acct_1234"}
+    )
+    assert clean.status_code == 200
+    clean_vendor = db.query(Vendor).filter(Vendor.id == clean.json()["id"]).first()
+    assert clean_vendor.screening_status == "CLEAR"
+
+    # A vendor name matching the (mock) watchlist screens HIT.
+    flagged = client.post(
+        "/api/bills/vendors",
+        headers=headers,
+        json={"name": "OFAC TEST Holdings", "email": "ap@flagged.example", "masked_bank_account": "acct_5678"}
+    )
+    assert flagged.status_code == 200
+    flagged_vendor_id = flagged.json()["id"]
+    flagged_vendor = db.query(Vendor).filter(Vendor.id == flagged_vendor_id).first()
+    assert flagged_vendor.screening_status == "HIT"
+
+    from app.screening.models import SanctionsScreening
+    screening_row = db.query(SanctionsScreening).filter(
+        SanctionsScreening.subject_type == "VENDOR", SanctionsScreening.subject_id == flagged_vendor_id
+    ).first()
+    assert screening_row is not None
+    assert screening_row.status == "HIT"
+
+    # A bill against the flagged vendor cannot be paid, even once approved.
+    bill = Bill(
+        id="screen-bill-1",
+        entity_id=entity.id,
+        department_id=dept.id,
+        vendor_id=flagged_vendor_id,
+        status="APPROVED",
+        due_date=datetime(2026, 12, 31),
+        total_amount=Decimal("100.00"),
+        payment_method="BANK_TRANSFER"
+    )
+    db.add(bill)
+    db.commit()
+
+    pay_response = client.post(f"/api/bills/{bill.id}/pay", headers=headers)
+    assert pay_response.status_code == 403
+    assert "sanctions screening" in pay_response.json()["detail"]
+
+def test_stripe_dispute_webhook_creates_and_resolves_dispute(monkeypatch, db_session):
+    db = db_session
+    from app.cards.models import Card
+    from app.disputes.models import CardDispute
+    import app.webhooks.router as webhooks_router
+
+    entity = db.query(Entity).filter(Entity.id == "hardening-ent-1").first()
+    if not entity:
+        entity = Entity(id="hardening-ent-1", name="Hardening Entity", onboarding_status="APPROVED")
+        db.add(entity)
+        db.commit()
+
+    card = Card(
+        id="disp-card-1",
+        entity_id="hardening-ent-1",
+        owner_id="disp-owner-1",
+        department_id="hardening-dept-1",
+        spend_program_id="disp-sp-1",
+        type="VIRTUAL",
+        limit_amount=Decimal("1000.00"),
+        status="ACTIVE",
+        masked_pan="**** **** **** 1234",
+        card_token="ch_stripe_card_test_1"
+    )
+    db.add(card)
+    db.commit()
+
+    monkeypatch.setattr(
+        webhooks_router,
+        "_resolve_card_token_for_issuing_transaction",
+        lambda ref: "ch_stripe_card_test_1"
+    )
+
+    response = client.post(
+        "/api/webhooks/stripe",
+        json={
+            "type": "issuing_dispute.created",
+            "data": {"object": {
+                "id": "idp_test_1",
+                "amount": 5000,
+                "reason": "fraudulent",
+                "status": "unsubmitted",
+                "transaction": "ipi_test_txn_1"
+            }}
+        }
+    )
+    assert response.status_code == 200
+
+    dispute = db.query(CardDispute).filter(CardDispute.stripe_dispute_id == "idp_test_1").first()
+    assert dispute is not None
+    assert dispute.status == "WARNING_NEEDS_RESPONSE"
+    assert dispute.entity_id == "hardening-ent-1"
+    assert dispute.card_id == "disp-card-1"
+    assert float(dispute.amount) == 50.0
+
+    response = client.post(
+        "/api/webhooks/stripe",
+        json={
+            "type": "issuing_dispute.funds_reinstated",
+            "data": {"object": {
+                "id": "idp_test_1",
+                "amount": 5000,
+                "reason": "fraudulent",
+                "status": "won",
+                "transaction": "ipi_test_txn_1"
+            }}
+        }
+    )
+    assert response.status_code == 200
+    db.refresh(dispute)
+    assert dispute.status == "WON"
+

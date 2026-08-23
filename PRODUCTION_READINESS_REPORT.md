@@ -17,6 +17,17 @@ Pure-code gaps that don't require a vendor account were closed:
 - **QBO OAuth token refresh** — `refresh_access_token()` on `QuickBooksOnlineClient`, wired through `get_valid_qbo_connection()` so any QBO-calling endpoint transparently refreshes a token within 5 minutes of expiry instead of failing.
 - **Real ERP sync queue** — `POST /api/accounting/sync/process` now pushes queued items to QBO as journal entries when the entity has a live `ERPConnection`, with exponential-backoff retry (up to 5 attempts) on failure; falls back to the existing simulated round-trip when no real connection is configured, so demos/tests are unaffected.
 
+### Compliance scaffolding (this pass)
+
+Two new modules, built as pluggable mock/real clients following the same pattern as Stripe/Dwolla/Plaid — functional end-to-end today in mock mode, and code-complete for production once a real vendor account and key are supplied:
+
+- **AML/OFAC sanctions screening** (`app/screening/`) — every new entity (on `/api/auth/register`) and every new vendor (on `POST /api/bills/vendors`) is screened against a watchlist provider. `MockSanctionsScreeningClient` is deterministic (flags names containing an obvious test marker like "OFAC TEST") so demos and tests are reliable without a real watchlist; `ComplyAdvantageClient` calls the real ComplyAdvantage Search API when `USE_REAL_SCREENING=true` and `COMPLYADVANTAGE_API_KEY` is set. A screening `HIT` blocks entity auto-approval (both the `AUTO_APPROVE_ONBOARDING` path and the Didit-webhook approval path) and blocks `POST /api/bills/{id}/pay` for the flagged vendor (`403`) until an admin manually re-screens via `POST /api/screening/rescreen/vendor/{vendor_id}`. Every screen is recorded in `sanctions_screenings` as an audit trail, readable via `GET /api/screening`.
+  - **Still needed for production:** a real ComplyAdvantage (or equivalent) account, `COMPLYADVANTAGE_API_KEY`, ongoing/periodic re-screening (not just at creation time — sanctions lists change), and a documented manual-review workflow for hits.
+- **Dispute & chargeback handling** (`app/disputes/`) — `webhooks/router.py` now handles Stripe's `issuing_dispute.created`, `issuing_dispute.updated`, `issuing_dispute.funds_reinstated`, and `issuing_dispute.funds_rescinded` events, mirroring dispute state into a local `card_disputes` table (resolving the card via one Stripe API call to expand the issuing transaction, since the webhook payload only carries the transaction ID). `GET /api/disputes` lists them; `POST /api/disputes/{id}/evidence` lets an admin attach evidence and move a dispute to `UNDER_REVIEW`, submitting it to Stripe for real when `USE_REAL_ISSUING=true`.
+  - **Still needed for production:** a cardholder-facing dispute-initiation flow (today disputes only arrive via Stripe webhook, there's no "report this transaction" button), evidence file/receipt upload, and SLA tracking against Stripe's response deadlines.
+
+New env vars: `COMPLYADVANTAGE_API_KEY`, `USE_REAL_SCREENING` (both default to mock/off).
+
 ---
 
 ## Integration Status

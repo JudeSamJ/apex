@@ -15,6 +15,8 @@ from app.jobs.router import router as jobs_router
 from app.webhooks.router import router as webhooks_router
 from app.plaid.router import router as plaid_router
 from app.qbo.router import router as qbo_router
+from app.screening.router import router as screening_router
+from app.disputes.router import router as disputes_router
 
 app = FastAPI(title="Ramp Clone B2B Fintech Platform API", version="1.0.0")
 
@@ -49,3 +51,5 @@ app.include_router(jobs_router)
 app.include_router(webhooks_router)
 app.include_router(plaid_router)
 app.include_router(qbo_router)
+app.include_router(screening_router)
+app.include_router(disputes_router)

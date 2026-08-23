@@ -11,6 +11,7 @@ class Vendor(Base):
     entity_id = Column(String(36), ForeignKey("entities.id"), nullable=False)
     name = Column(String(255), nullable=False)
     default_gl_account_id = Column(String(36), nullable=True)  # Placeholder for Phase 3 sync
+    screening_status = Column(String(20), nullable=False, default="CLEAR")  # CLEAR, HIT, ERROR
 
     entity = relationship("Entity")
 
