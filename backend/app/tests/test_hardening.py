@@ -956,3 +956,91 @@ def test_ops_summary_and_discrepancy_resolution(db_session):
     )
     assert re_resolve.status_code == 400
 
+def test_sso_connection_setup_and_jit_provisioned_login(db_session):
+    db = db_session
+    from app.sso.client import MockSSOClient
+    from app.sso.models import SSOConnection
+    from app.entities_rbac.models import User
+
+    role = db.query(Role).filter(Role.id == "ADMIN").first()
+    if not role:
+        db.add(Role(id="ADMIN", name="Admin"))
+        db.commit()
+
+    entity = Entity(id="sso-ent-1", name="SSO Entity", onboarding_status="APPROVED")
+    admin_user = User(
+        id="sso-admin-1",
+        name="SSO Admin",
+        email="sso-admin@ssoco.example.com",
+        entity_id=entity.id,
+        password_hash=get_password_hash("password123")
+    )
+    db.add_all([entity, admin_user])
+    db.flush()
+    db.add(UserRole(user_id=admin_user.id, role_id="ADMIN", entity_id=entity.id))
+    db.commit()
+
+    response = client.post("/api/auth/token", data={"username": "sso-admin@ssoco.example.com", "password": "password123"})
+    headers = {"Authorization": f"Bearer {response.json()['access_token']}", "X-Entity-Id": entity.id}
+
+    # Set up SSO for the entity's domain.
+    create = client.post("/api/sso/connections", headers=headers, json={"domain": "ssoco.example.com"})
+    assert create.status_code == 200
+    connection_body = create.json()
+    assert connection_body["status"] == "ACTIVE"  # mock client activates immediately
+    assert connection_body["admin_portal_url"].startswith("https://mock-sso.example.com/portal/")
+
+    # A second connection for the same entity is rejected.
+    dup = client.post("/api/sso/connections", headers=headers, json={"domain": "other.example.com"})
+    assert dup.status_code == 400
+
+    connection = db.query(SSOConnection).filter(SSOConnection.entity_id == entity.id).first()
+    assert connection.workos_connection_id is not None
+
+    # An unconfigured domain has no login URL.
+    no_sso = client.get("/api/sso/login-url", params={"email": "someone@unknown.example.com"})
+    assert no_sso.status_code == 404
+
+    # The configured domain does.
+    login_url = client.get("/api/sso/login-url", params={"email": "newhire@ssoco.example.com"})
+    assert login_url.status_code == 200
+    assert "mock-sso.example.com/authorize" in login_url.json()["authorization_url"]
+
+    # Simulate the IdP round-trip and exchange the code for a real token.
+    code = MockSSOClient.simulate_authorization_code(
+        email="newhire@ssoco.example.com", connection_id=connection.workos_connection_id
+    )
+    exchange = client.post("/api/sso/exchange", json={"code": code})
+    assert exchange.status_code == 200
+    sso_token = exchange.json()["access_token"]
+
+    # The user was JIT-provisioned into the right entity with EMPLOYEE role.
+    me = client.get("/api/auth/me", headers={"Authorization": f"Bearer {sso_token}", "X-Entity-Id": entity.id})
+    assert me.status_code == 200
+    me_body = me.json()
+    assert me_body["email"] == "newhire@ssoco.example.com"
+    assert me_body["active_entity_id"] == entity.id
+    assert me_body["roles"] == ["EMPLOYEE"]
+
+    provisioned_user = db.query(User).filter(User.email == "newhire@ssoco.example.com").first()
+    assert provisioned_user.auth_provider == "SSO"
+
+    # A second login for the same user reuses the account, doesn't re-provision.
+    code2 = MockSSOClient.simulate_authorization_code(
+        email="newhire@ssoco.example.com", connection_id=connection.workos_connection_id
+    )
+    exchange2 = client.post("/api/sso/exchange", json={"code": code2})
+    assert exchange2.status_code == 200
+    assert db.query(User).filter(User.email == "newhire@ssoco.example.com").count() == 1
+
+    # A code whose email domain doesn't match the connection's domain is rejected.
+    mismatched_code = MockSSOClient.simulate_authorization_code(
+        email="attacker@evil.example.com", connection_id=connection.workos_connection_id
+    )
+    mismatched = client.post("/api/sso/exchange", json={"code": mismatched_code})
+    assert mismatched.status_code == 401
+
+    # A garbage code is rejected, not a 500.
+    garbage = client.post("/api/sso/exchange", json={"code": "not-a-real-code"})
+    assert garbage.status_code == 401
+

@@ -50,11 +50,14 @@ New env vars: `SENTRY_DSN`, `SENTRY_ENVIRONMENT`, `SENTRY_TRACES_SAMPLE_RATE`, `
 - **Admin ops console** (`app/ops/`) — `GET /api/ops/summary` is a one-screen view of everything needing admin attention (pending approvals, open disputes, vendors with a sanctions hit, sync errors, open reconciliation discrepancies, unread notifications). `POST /api/ops/reconciliation-discrepancies/{id}/resolve` closes the loop the reconciliation engine opens: `RETRY` resets the underlying bill/reimbursement to `APPROVED` so it can be paid out again, `ACKNOWLEDGE` closes a false positive — both audit-logged.
   - **Still needed for production:** a real admin UI (today this is API-only), and broader ops actions (e.g. force-canceling a stuck card, manually re-running a single sync item) beyond the reconciliation-discrepancy workflow.
 
-New env vars: none beyond what earlier passes already added.
+New env vars: `USE_REAL_EMAIL`, `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD`, `SMTP_FROM_EMAIL`, `COMPLYADVANTAGE_API_KEY`, `USE_REAL_SCREENING` (all optional, default to mock/off).
 
-New env vars: `USE_REAL_EMAIL`, `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD`, `SMTP_FROM_EMAIL` (all optional, default to mock/logged email).
+### Enterprise SSO (this pass)
 
-New env vars: `COMPLYADVANTAGE_API_KEY`, `USE_REAL_SCREENING` (both default to mock/off).
+- **SSO/SAML login via WorkOS** (`app/sso/`) — WorkOS abstracts SAML/OIDC across every major IdP (Okta, Azure AD, Google Workspace, OneLogin, etc.) behind one API, which is why it's the fast path here rather than implementing SAML directly. `POST /api/sso/connections` (admin) provisions a WorkOS Organization for the entity's email domain and returns an Admin Portal link where the customer's IT admin configures their actual IdP; the connection stays `PENDING` until `POST /api/sso/connections/{id}/activate` confirms it (mock client activates immediately for sandbox/demo). `GET /api/sso/login-url?email=` lets the frontend decide whether to show a password field at all — 404 falls back to normal login. `POST /api/sso/exchange` takes the IdP's authorization code, resolves the matching connection, and **just-in-time provisions** the user (`EMPLOYEE` role, `auth_provider="SSO"`, a random unusable password hash so the password-login path can never work for that account) if they don't already exist — from there an SSO user is indistinguishable from a password user. Defense in depth: the exchanged profile's email domain is checked against the connection's registered domain even though a real WorkOS connection should never mismatch, and an existing account under a different entity is never silently reassigned.
+  - **Still needed for production:** a real WorkOS account and `WORKOS_API_KEY`/`WORKOS_CLIENT_ID`; a frontend `/sso-callback` route and a login-page branch that calls `GET /api/sso/login-url` before showing a password field; SCIM-based deprovisioning (today a deactivated IdP user still has a valid local account and JWT until it expires); and enforcing SSO-only login for a domain once configured (currently a JIT-provisioned SSO user's account exists locally and nothing stops an admin from also using password-reset-style flows against it, since none exist yet — see MFA's own "still needed" note).
+
+New env vars: `WORKOS_API_KEY`, `WORKOS_CLIENT_ID`, `USE_REAL_SSO` (optional, default off/mock).
 
 ---
 

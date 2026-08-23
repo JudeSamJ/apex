@@ -51,6 +51,7 @@ class User(Base):
     password_hash = Column(String(255), nullable=False)  # For auth
     mfa_secret = Column(String(64), nullable=True)  # TOTP secret, set on enroll
     mfa_enabled = Column(Boolean, nullable=False, default=False)
+    auth_provider = Column(String(20), nullable=False, default="PASSWORD")  # PASSWORD, SSO
 
     entity = relationship("Entity")
     roles = relationship("UserRole", back_populates="user")

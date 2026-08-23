@@ -43,6 +43,7 @@ def init_db():
     from app.disputes.models import CardDispute
     from app.reconciliation.models import ReconciliationRun, ReconciliationDiscrepancy
     from app.notifications.models import Notification
+    from app.sso.models import SSOConnection
     
     # Create tables
     Base.metadata.create_all(bind=engine)
