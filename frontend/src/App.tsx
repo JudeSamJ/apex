@@ -1,31 +1,25 @@
 import React, { useState, useEffect } from 'react';
-import { 
-  CreditCard, 
-  TrendingUp, 
-  Users, 
-  Layers, 
-  ArrowUpRight, 
-  RefreshCw, 
-  ShieldAlert, 
-  Check, 
-  X, 
-  Lock, 
+import {
+  CreditCard,
+  TrendingUp,
+  Layers,
+  RefreshCw,
+  ShieldAlert,
+  Check,
+  X,
+  Lock,
   Unlock,
   AlertTriangle,
-  Building,
   DollarSign,
-  Plus,
   CheckSquare,
   FileText,
   Receipt,
   MapPin,
-  HelpCircle,
-  Truck,
   Database,
-  Eye,
   Sliders,
   Settings,
-  PieChart
+  Bell,
+  Shield
 } from 'lucide-react';
 
 const API_BASE = 'http://localhost:8000';
@@ -37,6 +31,7 @@ interface UserMe {
   active_entity_id: string;
   roles: string[];
   accessible_departments: string[] | null;
+  mfa_enabled?: boolean;
 }
 
 interface Entity {
@@ -67,6 +62,7 @@ interface Card {
   spend_program_name: string;
   type: string;
   limit_amount: number;
+  currency: string;
   status: string;
   masked_pan: string;
   created_at: string;
@@ -79,6 +75,7 @@ interface CardRequest {
   spend_program_name: string;
   type: string;
   limit_amount: number;
+  currency: string;
   status: string;
   created_at: string;
 }
@@ -102,10 +99,95 @@ interface DashboardMetrics {
     total_spend: number;
     active_cards: number;
     pending_requests: number;
+    currency?: string;
   };
   spend_by_department: { department: string; amount: number }[];
   spend_by_category: { category: string; amount: number }[];
   spend_over_time: { date: string; amount: number }[];
+}
+
+interface NotificationItem {
+  id: string;
+  type: string;
+  title: string;
+  body: string | null;
+  read: boolean;
+  created_at: string;
+}
+
+interface OpsSummary {
+  pending_approvals: number;
+  open_disputes: number;
+  vendors_sanctions_hit: number;
+  sync_errors: number;
+  open_reconciliation_discrepancies: number;
+  unread_admin_notifications: number;
+}
+
+interface ScreeningRecord {
+  id: string;
+  subject_type: string;
+  subject_id: string;
+  subject_name: string;
+  provider: string;
+  status: string;
+  match_details: any;
+  created_at: string;
+}
+
+interface CardDispute {
+  id: string;
+  card_id: string | null;
+  transaction_id: string | null;
+  stripe_dispute_id: string;
+  amount: number;
+  reason: string | null;
+  status: string;
+  evidence_note: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+interface ReconciliationRun {
+  id: string;
+  provider: string;
+  status: string;
+  checked_count: number;
+  discrepancy_count: number;
+  error_message: string | null;
+  started_at: string;
+  completed_at: string | null;
+}
+
+interface ReconciliationDiscrepancy {
+  id: string;
+  subject_type: string;
+  subject_id: string;
+  transfer_ref: string;
+  local_status: string;
+  provider_status: string;
+  amount: number | null;
+  resolved: string | null;
+  created_at: string;
+}
+
+interface NecReportRow {
+  vendor_id: string;
+  vendor_name: string;
+  tax_id: string | null;
+  tax_address: string | null;
+  total_paid: number;
+  payment_count: number;
+  reportable: boolean;
+}
+
+interface SSOConnection {
+  id: string;
+  domain: string;
+  provider: string;
+  status: string;
+  admin_portal_url: string | null;
+  created_at: string;
 }
 
 interface ApprovalStep {
@@ -258,15 +340,47 @@ export default function App() {
   const [glAccounts, setGlAccounts] = useState<GLAccount[]>([]);
   const [glMappings, setGlMappings] = useState<GLMapping[]>([]);
   const [syncQueue, setSyncQueue] = useState<SyncQueueItem[]>([]);
-  const [customFields, setCustomFields] = useState<CustomField[]>([]);
+  const [, setCustomFields] = useState<CustomField[]>([]);
   const [insights, setInsights] = useState<Insight[]>([]);
   const [totalSavings, setTotalSavings] = useState<number>(0);
   const [budgets, setBudgets] = useState<BudgetCompare[]>([]);
   const [adminKPIs, setAdminKPIs] = useState<AdminKPIs | null>(null);
 
+  // Notifications / Ops Center / SSO / MFA / FX state
+  const [notifications, setNotifications] = useState<NotificationItem[]>([]);
+  const [showNotifications, setShowNotifications] = useState<boolean>(false);
+  const [opsSummary, setOpsSummary] = useState<OpsSummary | null>(null);
+  const [screenings, setScreenings] = useState<ScreeningRecord[]>([]);
+  const [disputes, setDisputes] = useState<CardDispute[]>([]);
+  const [reconciliationRuns, setReconciliationRuns] = useState<ReconciliationRun[]>([]);
+  const [reconciliationDiscrepancies, setReconciliationDiscrepancies] = useState<Record<string, ReconciliationDiscrepancy[]>>({});
+  const [necReport, setNecReport] = useState<NecReportRow[]>([]);
+  const [necYear, setNecYear] = useState<number>(new Date().getFullYear());
+  const [ssoConnections, setSsoConnections] = useState<SSOConnection[]>([]);
+  const [ssoDomainInput, setSsoDomainInput] = useState<string>('');
+  const [supportedCurrencies, setSupportedCurrencies] = useState<string[]>(['USD']);
+  const [disputeEvidenceInput, setDisputeEvidenceInput] = useState<Record<string, string>>({});
+  const [vendorTaxIdInput, setVendorTaxIdInput] = useState<string>('');
+  const [vendorTaxAddressInput, setVendorTaxAddressInput] = useState<string>('');
+  const [taxInfoVendorId, setTaxInfoVendorId] = useState<string>('');
+
+  // MFA self-service state
+  const [mfaEnabled, setMfaEnabled] = useState<boolean>(false);
+  const [mfaEnrollSecret, setMfaEnrollSecret] = useState<string | null>(null);
+  const [mfaEnrollUrl, setMfaEnrollUrl] = useState<string | null>(null);
+  const [mfaCodeInput, setMfaCodeInput] = useState<string>('');
+
+  // Login-time MFA challenge state
+  const [mfaChallengeToken, setMfaChallengeToken] = useState<string | null>(null);
+  const [loginMfaCode, setLoginMfaCode] = useState<string>('');
+
+  // SSO login state
+  const [ssoEmailInput, setSsoEmailInput] = useState<string>('');
+  const [ssoLoginError, setSsoLoginError] = useState<string | null>(null);
+
   // Tab control
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'cards' | 'bills' | 'reimbursements' | 'transactions' | 'approvals' | 'accounting' | 'insights'>('dashboard');
-  
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'cards' | 'bills' | 'reimbursements' | 'transactions' | 'approvals' | 'accounting' | 'insights' | 'ops' | 'settings'>('dashboard');
+
   const [emailInput, setEmailInput] = useState<string>('employee@apex.com');
   const [passwordInput, setPasswordInput] = useState<string>('password123');
 
@@ -278,6 +392,7 @@ export default function App() {
   const [reqType, setReqType] = useState<'VIRTUAL' | 'PHYSICAL'>('VIRTUAL');
   const [reqProgramId, setReqProgramId] = useState<string>('');
   const [reqLimit, setReqLimit] = useState<number>(1000);
+  const [reqCurrency, setReqCurrency] = useState<string>('USD');
   const [createProgramName, setCreateProgramName] = useState<string>('');
   const [createProgramLimit, setCreateProgramLimit] = useState<number>(5000);
   const [createProgramType, setCreateProgramType] = useState<string>('MONTHLY');
@@ -350,7 +465,7 @@ export default function App() {
 
   // Auto-refresh timer for background items
   useEffect(() => {
-    let interval: NodeJS.Timeout;
+    let interval: ReturnType<typeof setInterval>;
     if (token && user) {
       interval = setInterval(() => {
         fetchTransactions();
@@ -362,10 +477,12 @@ export default function App() {
         fetchInsights();
         fetchTotalSavings();
         fetchBudgetsComparison();
+        fetchNotifications();
         if (user.roles.includes('ADMIN') || user.roles.includes('BOOKKEEPER')) {
           fetchAdminKPIs();
           fetchAuditLogs();
           fetchBackgroundJobs();
+          fetchOpsSummary();
         }
       }, 5000);
     }
@@ -398,13 +515,27 @@ export default function App() {
       fetchInsights();
       fetchTotalSavings();
       fetchBudgetsComparison();
+      fetchNotifications();
+      fetchSupportedCurrencies();
+      fetchDisputes();
+      fetchScreenings();
+      fetchReconciliationRuns();
+      fetchNecReport();
       if (user.roles.includes('ADMIN') || user.roles.includes('BOOKKEEPER')) {
         fetchAdminKPIs();
         fetchAuditLogs();
         fetchBackgroundJobs();
+        fetchOpsSummary();
+      }
+      if (user.roles.includes('ADMIN')) {
+        fetchSsoConnections();
       }
     }
   }, [user, activeEntityId]);
+
+  useEffect(() => {
+    if (user) fetchNecReport();
+  }, [necYear]);
 
   const fetchUser = async () => {
     try {
@@ -417,6 +548,7 @@ export default function App() {
       }
       const data = await res.json();
       setUser(data);
+      setMfaEnabled(!!data.mfa_enabled);
       if (!activeEntityId) {
         setActiveEntityId(data.active_entity_id);
       }
@@ -455,6 +587,18 @@ export default function App() {
     setTotalSavings(0);
     setBudgets([]);
     setAdminKPIs(null);
+    setNotifications([]);
+    setOpsSummary(null);
+    setScreenings([]);
+    setDisputes([]);
+    setReconciliationRuns([]);
+    setReconciliationDiscrepancies({});
+    setNecReport([]);
+    setSsoConnections([]);
+    setMfaEnabled(false);
+    setMfaEnrollSecret(null);
+    setMfaEnrollUrl(null);
+    setMfaChallengeToken(null);
   };
 
   const handleLogin = async (e: React.FormEvent) => {
@@ -477,6 +621,12 @@ export default function App() {
       }
 
       const data = await res.json();
+      if (data.mfa_required) {
+        // Password check passed, but a second factor is required — the
+        // access_token isn't issued yet, just a short-lived challenge token.
+        setMfaChallengeToken(data.mfa_challenge_token);
+        return;
+      }
       localStorage.setItem('token', data.access_token);
       setToken(data.access_token);
     } catch (err: any) {
@@ -485,6 +635,78 @@ export default function App() {
       setLoading(false);
     }
   };
+
+  const handleMfaVerifyLogin = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setLoading(true);
+    setErrorMessage(null);
+    try {
+      const res = await fetch(`${API_BASE}/api/auth/mfa/verify-login`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ challenge_token: mfaChallengeToken, code: loginMfaCode })
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.detail || 'Invalid authentication code');
+      }
+      const data = await res.json();
+      localStorage.setItem('token', data.access_token);
+      setToken(data.access_token);
+      setMfaChallengeToken(null);
+      setLoginMfaCode('');
+    } catch (err: any) {
+      setErrorMessage(err.message || 'Verification failed');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleSsoLogin = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setSsoLoginError(null);
+    setLoading(true);
+    try {
+      const res = await fetch(`${API_BASE}/api/sso/login-url?email=${encodeURIComponent(ssoEmailInput)}`);
+      if (!res.ok) {
+        throw new Error('No SSO connection is configured for this email domain');
+      }
+      const data = await res.json();
+      window.location.href = data.authorization_url;
+    } catch (err: any) {
+      setSsoLoginError(err.message || 'SSO login failed');
+      setLoading(false);
+    }
+  };
+
+  // Handles the IdP redirecting back with ?code=... after an SSO login —
+  // exchanges it for a real access token, same as the QBO/Plaid OAuth flows.
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const code = params.get('code');
+    if (!code) return;
+
+    (async () => {
+      try {
+        const res = await fetch(`${API_BASE}/api/sso/exchange`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ code })
+        });
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}));
+          throw new Error(err.detail || 'SSO sign-in failed');
+        }
+        const data = await res.json();
+        localStorage.setItem('token', data.access_token);
+        setToken(data.access_token);
+      } catch (err: any) {
+        setErrorMessage(err.message || 'SSO sign-in failed');
+      } finally {
+        window.history.replaceState({}, '', window.location.pathname);
+      }
+    })();
+  }, []);
 
   const handleQuickLogin = (email: string) => {
     setEmailInput(email);
@@ -685,6 +907,262 @@ export default function App() {
     } catch (e) { console.error(e); }
   };
 
+  // --- Notifications ---
+  const fetchNotifications = async () => {
+    try {
+      const res = await fetch(`${API_BASE}/api/notifications`, { headers: getHeaders() });
+      if (res.ok) setNotifications(await res.json());
+    } catch (e) { console.error(e); }
+  };
+
+  const handleMarkNotificationRead = async (id: string) => {
+    try {
+      const res = await fetch(`${API_BASE}/api/notifications/${id}/read`, { method: 'POST', headers: getHeaders() });
+      if (res.ok) fetchNotifications();
+    } catch (e) { console.error(e); }
+  };
+
+  const handleMarkAllNotificationsRead = async () => {
+    try {
+      const res = await fetch(`${API_BASE}/api/notifications/read-all`, { method: 'POST', headers: getHeaders() });
+      if (res.ok) fetchNotifications();
+    } catch (e) { console.error(e); }
+  };
+
+  // --- Ops Center ---
+  const fetchOpsSummary = async () => {
+    try {
+      const res = await fetch(`${API_BASE}/api/ops/summary`, { headers: getHeaders() });
+      if (res.ok) setOpsSummary(await res.json());
+    } catch (e) { console.error(e); }
+  };
+
+  const fetchScreenings = async () => {
+    try {
+      const res = await fetch(`${API_BASE}/api/screening`, { headers: getHeaders() });
+      if (res.ok) setScreenings(await res.json());
+    } catch (e) { console.error(e); }
+  };
+
+  const fetchDisputes = async () => {
+    try {
+      const res = await fetch(`${API_BASE}/api/disputes`, { headers: getHeaders() });
+      if (res.ok) setDisputes(await res.json());
+    } catch (e) { console.error(e); }
+  };
+
+  const handleSubmitDisputeEvidence = async (id: string) => {
+    setErrorMessage(null);
+    setSuccessMessage(null);
+    try {
+      const res = await fetch(`${API_BASE}/api/disputes/${id}/evidence`, {
+        method: 'POST',
+        headers: { ...getHeaders(), 'Content-Type': 'application/json' },
+        body: JSON.stringify({ evidence: disputeEvidenceInput[id] || '' })
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.detail || 'Failed to submit evidence');
+      }
+      setSuccessMessage('Evidence submitted, dispute moved to review.');
+      fetchDisputes();
+    } catch (err: any) {
+      setErrorMessage(err.message);
+    }
+  };
+
+  const fetchReconciliationRuns = async () => {
+    try {
+      const res = await fetch(`${API_BASE}/api/reconciliation/runs`, { headers: getHeaders() });
+      if (res.ok) setReconciliationRuns(await res.json());
+    } catch (e) { console.error(e); }
+  };
+
+  const fetchReconciliationDiscrepancies = async (runId: string) => {
+    try {
+      const res = await fetch(`${API_BASE}/api/reconciliation/runs/${runId}/discrepancies`, { headers: getHeaders() });
+      if (res.ok) {
+        const data = await res.json();
+        setReconciliationDiscrepancies(prev => ({ ...prev, [runId]: data }));
+      }
+    } catch (e) { console.error(e); }
+  };
+
+  const handleRunReconciliation = async () => {
+    setErrorMessage(null);
+    setSuccessMessage(null);
+    try {
+      const res = await fetch(`${API_BASE}/api/reconciliation/run`, { method: 'POST', headers: getHeaders() });
+      if (!res.ok) throw new Error('Reconciliation run failed');
+      const data = await res.json();
+      setSuccessMessage(`Reconciliation complete: ${data.checked_count} checked, ${data.discrepancy_count} discrepancy(ies) found.`);
+      fetchReconciliationRuns();
+      fetchOpsSummary();
+    } catch (err: any) {
+      setErrorMessage(err.message);
+    }
+  };
+
+  const handleResolveDiscrepancy = async (runId: string, discrepancyId: string, action: 'RETRY' | 'ACKNOWLEDGE') => {
+    setErrorMessage(null);
+    setSuccessMessage(null);
+    try {
+      const res = await fetch(`${API_BASE}/api/ops/reconciliation-discrepancies/${discrepancyId}/resolve`, {
+        method: 'POST',
+        headers: { ...getHeaders(), 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action })
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.detail || 'Failed to resolve discrepancy');
+      }
+      setSuccessMessage(`Discrepancy ${action === 'RETRY' ? 'reset for retry' : 'acknowledged'}.`);
+      fetchReconciliationDiscrepancies(runId);
+      fetchOpsSummary();
+      fetchBills();
+      fetchReimbursements();
+    } catch (err: any) {
+      setErrorMessage(err.message);
+    }
+  };
+
+  const fetchNecReport = async () => {
+    try {
+      const res = await fetch(`${API_BASE}/api/tax-reporting/1099-nec/${necYear}`, { headers: getHeaders() });
+      if (res.ok) setNecReport(await res.json());
+    } catch (e) { console.error(e); }
+  };
+
+  const handleDownloadNecCsv = () => {
+    window.open(`${API_BASE}/api/tax-reporting/1099-nec/${necYear}/export.csv`, '_blank');
+  };
+
+  const handleDownloadTransactionsCsv = () => {
+    window.open(`${API_BASE}/api/transactions/export.csv`, '_blank');
+  };
+
+  const handleUpdateVendorTaxInfo = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setErrorMessage(null);
+    setSuccessMessage(null);
+    try {
+      const res = await fetch(`${API_BASE}/api/bills/vendors/${taxInfoVendorId}/tax-info`, {
+        method: 'PATCH',
+        headers: { ...getHeaders(), 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tax_id: vendorTaxIdInput, tax_address: vendorTaxAddressInput })
+      });
+      if (!res.ok) throw new Error('Failed to save vendor tax info');
+      setSuccessMessage('Vendor tax info saved.');
+      setVendorTaxIdInput('');
+      setVendorTaxAddressInput('');
+      fetchNecReport();
+    } catch (err: any) {
+      setErrorMessage(err.message);
+    }
+  };
+
+  // --- SSO ---
+  const fetchSsoConnections = async () => {
+    try {
+      const res = await fetch(`${API_BASE}/api/sso/connections`, { headers: getHeaders() });
+      if (res.ok) setSsoConnections(await res.json());
+    } catch (e) { console.error(e); }
+  };
+
+  const handleCreateSsoConnection = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setErrorMessage(null);
+    setSuccessMessage(null);
+    try {
+      const res = await fetch(`${API_BASE}/api/sso/connections`, {
+        method: 'POST',
+        headers: { ...getHeaders(), 'Content-Type': 'application/json' },
+        body: JSON.stringify({ domain: ssoDomainInput })
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.detail || 'Failed to create SSO connection');
+      }
+      setSuccessMessage('SSO connection created.');
+      setSsoDomainInput('');
+      fetchSsoConnections();
+    } catch (err: any) {
+      setErrorMessage(err.message);
+    }
+  };
+
+  // --- FX ---
+  const fetchSupportedCurrencies = async () => {
+    try {
+      const res = await fetch(`${API_BASE}/api/fx/currencies`, { headers: getHeaders() });
+      if (res.ok) {
+        const data = await res.json();
+        setSupportedCurrencies(data.currencies);
+      }
+    } catch (e) { console.error(e); }
+  };
+
+  // --- MFA self-service ---
+  const handleMfaEnroll = async () => {
+    setErrorMessage(null);
+    setSuccessMessage(null);
+    try {
+      const res = await fetch(`${API_BASE}/api/auth/mfa/enroll`, { method: 'POST', headers: getHeaders() });
+      if (!res.ok) throw new Error('Failed to start MFA enrollment');
+      const data = await res.json();
+      setMfaEnrollSecret(data.secret);
+      setMfaEnrollUrl(data.otpauth_url);
+    } catch (err: any) {
+      setErrorMessage(err.message);
+    }
+  };
+
+  const handleMfaConfirm = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setErrorMessage(null);
+    setSuccessMessage(null);
+    try {
+      const res = await fetch(`${API_BASE}/api/auth/mfa/confirm`, {
+        method: 'POST',
+        headers: { ...getHeaders(), 'Content-Type': 'application/json' },
+        body: JSON.stringify({ code: mfaCodeInput })
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.detail || 'Invalid code');
+      }
+      setSuccessMessage('MFA enabled on your account.');
+      setMfaEnabled(true);
+      setMfaEnrollSecret(null);
+      setMfaEnrollUrl(null);
+      setMfaCodeInput('');
+    } catch (err: any) {
+      setErrorMessage(err.message);
+    }
+  };
+
+  const handleMfaDisable = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setErrorMessage(null);
+    setSuccessMessage(null);
+    try {
+      const res = await fetch(`${API_BASE}/api/auth/mfa/disable`, {
+        method: 'POST',
+        headers: { ...getHeaders(), 'Content-Type': 'application/json' },
+        body: JSON.stringify({ code: mfaCodeInput })
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.detail || 'Invalid code');
+      }
+      setSuccessMessage('MFA disabled on your account.');
+      setMfaEnabled(false);
+      setMfaCodeInput('');
+    } catch (err: any) {
+      setErrorMessage(err.message);
+    }
+  };
+
   const handleRetryJob = async (jobId: string) => {
     try {
       const res = await fetch(`${API_BASE}/api/reporting/background-jobs/${jobId}/retry`, {
@@ -823,7 +1301,7 @@ export default function App() {
       const data = await res.json();
       setSuccessMessage(`ERP Sync completed. Synced: ${data.synced}, Errors: ${data.errors}`);
       fetchSyncQueue();
-      if (user.roles.includes('ADMIN') || user.roles.includes('BOOKKEEPER')) {
+      if (user?.roles.includes('ADMIN') || user?.roles.includes('BOOKKEEPER')) {
         fetchAdminKPIs();
       }
     } catch (err: any) {
@@ -893,7 +1371,7 @@ export default function App() {
       if (res.ok) {
         fetchInsights();
         fetchTotalSavings();
-        if (user.roles.includes('ADMIN') || user.roles.includes('BOOKKEEPER')) {
+        if (user?.roles.includes('ADMIN') || user?.roles.includes('BOOKKEEPER')) {
           fetchAdminKPIs();
         }
       }
@@ -924,7 +1402,8 @@ export default function App() {
         body: JSON.stringify({
           spend_program_id: reqProgramId,
           type: reqType,
-          limit_amount: reqLimit
+          limit_amount: reqLimit,
+          currency: reqCurrency
         })
       });
       if (!res.ok) throw new Error('Failed to request card');
@@ -1243,6 +1722,41 @@ export default function App() {
             <h1 style={{ fontSize: '1.75rem', fontWeight: 800, fontFamily: 'Outfit', letterSpacing: '0.05em' }}>APEX PORTAL</h1>
           </div>
           
+          {mfaChallengeToken ? (
+            <form onSubmit={handleMfaVerifyLogin} style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
+              {errorMessage && (
+                <div style={{ color: 'var(--color-danger)', fontSize: '0.9rem', display: 'flex', gap: '0.25rem', alignItems: 'center' }}>
+                  <ShieldAlert size={16} />
+                  <span>{errorMessage}</span>
+                </div>
+              )}
+              <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
+                Enter the 6-digit code from your authenticator app.
+              </p>
+              <div>
+                <label>Authentication Code</label>
+                <input
+                  type="text"
+                  inputMode="numeric"
+                  autoFocus
+                  value={loginMfaCode}
+                  onChange={(e) => setLoginMfaCode(e.target.value)}
+                  required
+                />
+              </div>
+              <button type="submit" className="btn btn-primary" style={{ width: '100%' }}>
+                Verify &amp; Sign In
+              </button>
+              <button
+                type="button"
+                className="btn btn-secondary"
+                style={{ width: '100%' }}
+                onClick={() => { setMfaChallengeToken(null); setLoginMfaCode(''); setErrorMessage(null); }}
+              >
+                Back
+              </button>
+            </form>
+          ) : (
           <form onSubmit={handleLogin} style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
             {errorMessage && (
               <div style={{ color: 'var(--color-danger)', fontSize: '0.9rem', display: 'flex', gap: '0.25rem', alignItems: 'center' }}>
@@ -1253,21 +1767,21 @@ export default function App() {
 
             <div>
               <label>Corporate Email</label>
-              <input 
-                type="email" 
-                value={emailInput} 
-                onChange={(e) => setEmailInput(e.target.value)} 
-                required 
+              <input
+                type="email"
+                value={emailInput}
+                onChange={(e) => setEmailInput(e.target.value)}
+                required
               />
             </div>
 
             <div>
               <label>Password</label>
-              <input 
-                type="password" 
-                value={passwordInput} 
-                onChange={(e) => setPasswordInput(e.target.value)} 
-                required 
+              <input
+                type="password"
+                value={passwordInput}
+                onChange={(e) => setPasswordInput(e.target.value)}
+                required
               />
             </div>
 
@@ -1275,7 +1789,30 @@ export default function App() {
               Sign In
             </button>
           </form>
+          )}
 
+          {!mfaChallengeToken && (
+          <div style={{ marginTop: '1.5rem', borderTop: '1px solid var(--border-color)', paddingTop: '1.25rem' }}>
+            <form onSubmit={handleSsoLogin} style={{ display: 'flex', gap: '0.5rem' }}>
+              <input
+                type="email"
+                placeholder="you@company.com"
+                value={ssoEmailInput}
+                onChange={(e) => setSsoEmailInput(e.target.value)}
+                style={{ flex: 1 }}
+                required
+              />
+              <button type="submit" className="btn btn-secondary" style={{ whiteSpace: 'nowrap' }}>
+                Sign in with SSO
+              </button>
+            </form>
+            {ssoLoginError && (
+              <div style={{ color: 'var(--color-danger)', fontSize: '0.8rem', marginTop: '0.5rem' }}>{ssoLoginError}</div>
+            )}
+          </div>
+          )}
+
+          {!mfaChallengeToken && (
           <div style={{ marginTop: '2rem', borderTop: '1px solid var(--border-color)', paddingTop: '1.5rem' }}>
             <p style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', marginBottom: '0.75rem', textAlign: 'center' }}>
               Quick Switch Role Profiles
@@ -1302,6 +1839,7 @@ export default function App() {
               Seed Database with Demo Data
             </button>
           </div>
+          )}
         </div>
       </div>
     );
@@ -1403,6 +1941,31 @@ export default function App() {
                 )}
               </button>
             )}
+
+            {(user.roles.includes('ADMIN') || user.roles.includes('BOOKKEEPER')) && (
+              <button
+                className={`btn ${activeTab === 'ops' ? 'btn-primary' : 'btn-secondary'}`}
+                style={{ justifyContent: 'flex-start', width: '100%', position: 'relative' }}
+                onClick={() => setActiveTab('ops')}
+              >
+                <Shield size={18} />
+                <span>Ops Center</span>
+                {opsSummary && opsSummary.open_disputes + opsSummary.open_reconciliation_discrepancies > 0 && (
+                  <span className="badge badge-danger" style={{ position: 'absolute', right: '12px', fontSize: '0.7rem' }}>
+                    {opsSummary.open_disputes + opsSummary.open_reconciliation_discrepancies}
+                  </span>
+                )}
+              </button>
+            )}
+
+            <button
+              className={`btn ${activeTab === 'settings' ? 'btn-primary' : 'btn-secondary'}`}
+              style={{ justifyContent: 'flex-start', width: '100%' }}
+              onClick={() => setActiveTab('settings')}
+            >
+              <Settings size={18} />
+              <span>Settings</span>
+            </button>
           </nav>
         </div>
 
@@ -1410,7 +1973,44 @@ export default function App() {
         {user && (
           <div style={{ borderTop: '1px solid var(--border-color)', paddingTop: '1.5rem' }}>
             <div style={{ marginBottom: '1rem' }}>
-              <p style={{ fontWeight: 600, fontSize: '0.95rem' }}>{user.name}</p>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                <p style={{ fontWeight: 600, fontSize: '0.95rem' }}>{user.name}</p>
+                <button
+                  className="btn btn-secondary"
+                  style={{ position: 'relative', padding: '0.4rem' }}
+                  onClick={() => setShowNotifications(v => !v)}
+                  title="Notifications"
+                >
+                  <Bell size={16} />
+                  {notifications.filter(n => !n.read).length > 0 && (
+                    <span className="badge badge-danger" style={{ position: 'absolute', top: '-6px', right: '-6px', fontSize: '0.6rem' }}>
+                      {notifications.filter(n => !n.read).length}
+                    </span>
+                  )}
+                </button>
+              </div>
+              {showNotifications && (
+                <div style={{ maxHeight: '260px', overflowY: 'auto', border: '1px solid var(--border-color)', borderRadius: '8px', margin: '0.5rem 0', padding: '0.5rem' }}>
+                  {notifications.length === 0 && (
+                    <p style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>No notifications</p>
+                  )}
+                  {notifications.length > 0 && (
+                    <button className="btn btn-secondary" style={{ width: '100%', fontSize: '0.75rem', marginBottom: '0.5rem' }} onClick={handleMarkAllNotificationsRead}>
+                      Mark all read
+                    </button>
+                  )}
+                  {notifications.map(n => (
+                    <div
+                      key={n.id}
+                      onClick={() => !n.read && handleMarkNotificationRead(n.id)}
+                      style={{ padding: '0.5rem', borderRadius: '6px', marginBottom: '0.25rem', background: n.read ? 'transparent' : 'rgba(59,130,246,0.1)', cursor: n.read ? 'default' : 'pointer' }}
+                    >
+                      <p style={{ fontSize: '0.75rem', fontWeight: n.read ? 400 : 600 }}>{n.title}</p>
+                      <p style={{ fontSize: '0.7rem', color: 'var(--text-secondary)' }}>{n.body}</p>
+                    </div>
+                  ))}
+                </div>
+              )}
               <p style={{ color: 'var(--text-secondary)', fontSize: '0.8rem', overflow: 'hidden', textOverflow: 'ellipsis' }}>{user.email}</p>
               <div style={{ marginTop: '0.5rem', display: 'flex', gap: '0.25rem', flexWrap: 'wrap' }}>
                 {user.roles.map(r => (
@@ -1541,7 +2141,7 @@ export default function App() {
                 <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginTop: '0.5rem' }}>
                   <DollarSign size={24} color="var(--color-success)" />
                   <span style={{ fontSize: '2rem', fontWeight: 800, fontFamily: 'Outfit' }}>
-                    {metrics.metrics.total_spend.toLocaleString('en-US', { minimumFractionDigits: 2 })}
+                    {metrics.metrics.currency || 'USD'} {metrics.metrics.total_spend.toLocaleString('en-US', { minimumFractionDigits: 2 })}
                   </span>
                 </div>
               </div>
@@ -1804,6 +2404,14 @@ export default function App() {
                     <label>Requested Limit</label>
                     <input type="number" value={reqLimit} onChange={(e) => setReqLimit(Number(e.target.value))} required min="1" />
                   </div>
+                  <div style={{ width: '120px' }}>
+                    <label>Currency</label>
+                    <select value={reqCurrency} onChange={(e) => setReqCurrency(e.target.value)}>
+                      {supportedCurrencies.map(c => (
+                        <option key={c} value={c}>{c}</option>
+                      ))}
+                    </select>
+                  </div>
                   <button type="submit" className="btn btn-primary">Submit Card Request</button>
                 </form>
               )}
@@ -1842,7 +2450,7 @@ export default function App() {
                         </div>
                         <div style={{ textAlign: 'right' }}>
                           <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>LIMIT</p>
-                          <p style={{ fontWeight: 700, fontSize: '1.1rem' }}>${card.limit_amount.toLocaleString()}</p>
+                          <p style={{ fontWeight: 700, fontSize: '1.1rem' }}>{card.currency} {card.limit_amount.toLocaleString()}</p>
                         </div>
                       </div>
 
@@ -1886,7 +2494,7 @@ export default function App() {
                         <td style={{ padding: '0.75rem', fontWeight: 600 }}>{req.requester_name}</td>
                         <td style={{ padding: '0.75rem' }}>{req.department_name}</td>
                         <td style={{ padding: '0.75rem' }}>{req.spend_program_name}</td>
-                        <td style={{ padding: '0.75rem', fontWeight: 700 }}>${req.limit_amount.toLocaleString()}</td>
+                        <td style={{ padding: '0.75rem', fontWeight: 700 }}>{req.currency} {req.limit_amount.toLocaleString()}</td>
                         <td style={{ padding: '0.75rem' }}>{req.type}</td>
                         <td style={{ padding: '0.75rem' }}>
                           <span className={`badge ${req.status === 'APPROVED' ? 'badge-success' : req.status === 'PENDING_APPROVAL' ? 'badge-warning' : 'badge-danger'}`}>
@@ -2701,10 +3309,16 @@ export default function App() {
             <div className="card">
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.5rem' }}>
                 <h3 style={{ fontSize: '1.1rem', fontWeight: 700 }}>Real-time Transaction Audit Ledger</h3>
-                <button className="btn btn-secondary" style={{ padding: '0.5rem 1rem', display: 'flex', gap: '0.5rem', alignItems: 'center' }} onClick={() => { fetchTransactions(); fetchMetrics(); }}>
-                  <RefreshCw size={16} />
-                  <span>Refresh Feed</span>
-                </button>
+                <div style={{ display: 'flex', gap: '0.5rem' }}>
+                  <button className="btn btn-secondary" style={{ padding: '0.5rem 1rem', display: 'flex', gap: '0.5rem', alignItems: 'center' }} onClick={handleDownloadTransactionsCsv}>
+                    <FileText size={16} />
+                    <span>Export CSV</span>
+                  </button>
+                  <button className="btn btn-secondary" style={{ padding: '0.5rem 1rem', display: 'flex', gap: '0.5rem', alignItems: 'center' }} onClick={() => { fetchTransactions(); fetchMetrics(); }}>
+                    <RefreshCw size={16} />
+                    <span>Refresh Feed</span>
+                  </button>
+                </div>
               </div>
 
               <div style={{ overflowX: 'auto' }}>
@@ -2730,7 +3344,7 @@ export default function App() {
                           <span className="badge badge-info">{tx.category || 'Categorizing...'}</span>
                         </td>
                         <td style={{ padding: '0.75rem', fontWeight: 700, color: tx.status === 'DECLINED' ? 'var(--color-danger)' : 'var(--text-primary)' }}>
-                          ${tx.amount.toFixed(2)}
+                          {tx.currency} {tx.amount.toFixed(2)}
                         </td>
                         <td style={{ padding: '0.75rem' }}>
                           <span className={`badge ${tx.status === 'SETTLED' ? 'badge-success' : tx.status === 'HELD' ? 'badge-warning' : 'badge-danger'}`}>
@@ -2789,6 +3403,260 @@ export default function App() {
                 </div>
               )}
             </div>
+          </div>
+        )}
+
+        {activeTab === 'ops' && (
+          <div className="animate-fade-in">
+            <h2 style={{ fontSize: '1.5rem', fontWeight: 800, marginBottom: '1.5rem' }}>Ops Center</h2>
+
+            {opsSummary && (
+              <div className="grid-3" style={{ marginBottom: '2rem' }}>
+                <div className="card">
+                  <p style={{ color: 'var(--text-secondary)', fontSize: '0.85rem' }}>Pending Approvals</p>
+                  <p style={{ fontSize: '1.75rem', fontWeight: 800 }}>{opsSummary.pending_approvals}</p>
+                </div>
+                <div className="card">
+                  <p style={{ color: 'var(--text-secondary)', fontSize: '0.85rem' }}>Open Disputes</p>
+                  <p style={{ fontSize: '1.75rem', fontWeight: 800 }}>{opsSummary.open_disputes}</p>
+                </div>
+                <div className="card">
+                  <p style={{ color: 'var(--text-secondary)', fontSize: '0.85rem' }}>Vendors w/ Sanctions Hits</p>
+                  <p style={{ fontSize: '1.75rem', fontWeight: 800 }}>{opsSummary.vendors_sanctions_hit}</p>
+                </div>
+                <div className="card">
+                  <p style={{ color: 'var(--text-secondary)', fontSize: '0.85rem' }}>Sync Errors</p>
+                  <p style={{ fontSize: '1.75rem', fontWeight: 800 }}>{opsSummary.sync_errors}</p>
+                </div>
+                <div className="card">
+                  <p style={{ color: 'var(--text-secondary)', fontSize: '0.85rem' }}>Open Reconciliation Discrepancies</p>
+                  <p style={{ fontSize: '1.75rem', fontWeight: 800 }}>{opsSummary.open_reconciliation_discrepancies}</p>
+                </div>
+                <div className="card">
+                  <p style={{ color: 'var(--text-secondary)', fontSize: '0.85rem' }}>Unread Admin Notifications</p>
+                  <p style={{ fontSize: '1.75rem', fontWeight: 800 }}>{opsSummary.unread_admin_notifications}</p>
+                </div>
+              </div>
+            )}
+
+            {/* Reconciliation */}
+            <div className="card" style={{ marginBottom: '2rem' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
+                <h3 style={{ fontSize: '1.1rem', fontWeight: 700 }}>Payment-Rail Reconciliation</h3>
+                <button className="btn btn-primary" onClick={handleRunReconciliation}>
+                  <RefreshCw size={16} />
+                  <span>Run Reconciliation</span>
+                </button>
+              </div>
+              {reconciliationRuns.length === 0 && (
+                <p style={{ color: 'var(--text-secondary)', fontSize: '0.9rem' }}>No reconciliation runs yet.</p>
+              )}
+              {reconciliationRuns.map(run => (
+                <div key={run.id} style={{ borderBottom: '1px solid var(--border-color)', padding: '0.75rem 0' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <div>
+                      <span className="badge badge-info" style={{ marginRight: '0.5rem' }}>{run.provider}</span>
+                      <span className={`badge ${run.status === 'COMPLETED' ? 'badge-success' : run.status === 'FAILED' ? 'badge-danger' : 'badge-warning'}`}>{run.status}</span>
+                      <span style={{ marginLeft: '0.75rem', fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
+                        {run.checked_count} checked, {run.discrepancy_count} discrepancy(ies)
+                      </span>
+                    </div>
+                    {run.discrepancy_count > 0 && (
+                      <button className="btn btn-secondary" style={{ fontSize: '0.8rem' }} onClick={() => fetchReconciliationDiscrepancies(run.id)}>
+                        View Discrepancies
+                      </button>
+                    )}
+                  </div>
+                  {reconciliationDiscrepancies[run.id] && reconciliationDiscrepancies[run.id].length > 0 && (
+                    <div style={{ marginTop: '0.75rem', display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+                      {reconciliationDiscrepancies[run.id].map(d => (
+                        <div key={d.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: '#0e1014', padding: '0.5rem 0.75rem', borderRadius: '8px' }}>
+                          <div>
+                            <p style={{ fontSize: '0.85rem', fontWeight: 600 }}>{d.subject_type} {d.transfer_ref}</p>
+                            <p style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>
+                              Local: {d.local_status} vs Provider: {d.provider_status}{d.amount != null ? ` — $${d.amount.toFixed(2)}` : ''}
+                            </p>
+                          </div>
+                          {!d.resolved ? (
+                            <div style={{ display: 'flex', gap: '0.5rem' }}>
+                              <button className="btn btn-secondary" style={{ fontSize: '0.75rem' }} onClick={() => handleResolveDiscrepancy(run.id, d.id, 'RETRY')}>Retry</button>
+                              <button className="btn btn-secondary" style={{ fontSize: '0.75rem' }} onClick={() => handleResolveDiscrepancy(run.id, d.id, 'ACKNOWLEDGE')}>Acknowledge</button>
+                            </div>
+                          ) : (
+                            <span className="badge badge-success">{d.resolved}</span>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+
+            {/* Sanctions Screening */}
+            <div className="card" style={{ marginBottom: '2rem' }}>
+              <h3 style={{ fontSize: '1.1rem', fontWeight: 700, marginBottom: '1rem' }}>Sanctions Screening</h3>
+              {screenings.length === 0 && (
+                <p style={{ color: 'var(--text-secondary)', fontSize: '0.9rem' }}>No screening records.</p>
+              )}
+              {screenings.map(s => (
+                <div key={s.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid var(--border-color)', padding: '0.5rem 0' }}>
+                  <div>
+                    <p style={{ fontWeight: 600, fontSize: '0.9rem' }}>{s.subject_name} <span style={{ color: 'var(--text-secondary)', fontWeight: 400 }}>({s.subject_type})</span></p>
+                    <p style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>via {s.provider} — {new Date(s.created_at).toLocaleString()}</p>
+                  </div>
+                  <span className={`badge ${s.status === 'CLEAR' ? 'badge-success' : s.status === 'HIT' ? 'badge-danger' : 'badge-warning'}`}>{s.status}</span>
+                </div>
+              ))}
+            </div>
+
+            {/* Card Disputes */}
+            <div className="card" style={{ marginBottom: '2rem' }}>
+              <h3 style={{ fontSize: '1.1rem', fontWeight: 700, marginBottom: '1rem' }}>Card Disputes</h3>
+              {disputes.length === 0 && (
+                <p style={{ color: 'var(--text-secondary)', fontSize: '0.9rem' }}>No disputes.</p>
+              )}
+              {disputes.map(d => (
+                <div key={d.id} style={{ borderBottom: '1px solid var(--border-color)', padding: '0.75rem 0' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <div>
+                      <p style={{ fontWeight: 600, fontSize: '0.9rem' }}>${d.amount.toFixed(2)} — {d.reason || 'No reason given'}</p>
+                      <p style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>{new Date(d.created_at).toLocaleString()}</p>
+                    </div>
+                    <span className={`badge ${d.status === 'WON' ? 'badge-success' : d.status === 'LOST' ? 'badge-danger' : 'badge-warning'}`}>{d.status}</span>
+                  </div>
+                  {(d.status === 'WARNING_NEEDS_RESPONSE' || d.status === 'UNDER_REVIEW') && (
+                    <div style={{ marginTop: '0.5rem', display: 'flex', gap: '0.5rem' }}>
+                      <input
+                        placeholder="Evidence / explanation..."
+                        value={disputeEvidenceInput[d.id] || ''}
+                        onChange={(e) => setDisputeEvidenceInput(prev => ({ ...prev, [d.id]: e.target.value }))}
+                        style={{ flex: 1 }}
+                      />
+                      <button className="btn btn-primary" style={{ fontSize: '0.8rem' }} onClick={() => handleSubmitDisputeEvidence(d.id)}>
+                        Submit Evidence
+                      </button>
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+
+            {/* 1099-NEC Tax Reporting */}
+            <div className="card">
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
+                <h3 style={{ fontSize: '1.1rem', fontWeight: 700 }}>1099-NEC Tax Reporting</h3>
+                <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+                  <select value={necYear} onChange={(e) => setNecYear(Number(e.target.value))} style={{ fontSize: '0.85rem', padding: '0.4rem' }}>
+                    {[0, 1, 2].map(offset => {
+                      const y = new Date().getFullYear() - offset;
+                      return <option key={y} value={y}>{y}</option>;
+                    })}
+                  </select>
+                  <button className="btn btn-secondary" style={{ fontSize: '0.8rem' }} onClick={handleDownloadNecCsv}>Download CSV</button>
+                </div>
+              </div>
+              <div style={{ overflowX: 'auto' }}>
+                <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left' }}>
+                  <thead>
+                    <tr style={{ borderBottom: '1px solid var(--border-color)', color: 'var(--text-secondary)', fontSize: '0.85rem' }}>
+                      <th style={{ padding: '0.5rem' }}>Vendor</th>
+                      <th style={{ padding: '0.5rem' }}>Tax ID</th>
+                      <th style={{ padding: '0.5rem' }}>Total Paid</th>
+                      <th style={{ padding: '0.5rem' }}>Payments</th>
+                      <th style={{ padding: '0.5rem' }}>Reportable</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {necReport.map(row => (
+                      <tr key={row.vendor_id} style={{ borderBottom: '1px solid var(--border-color)', fontSize: '0.85rem' }}>
+                        <td style={{ padding: '0.5rem' }}>{row.vendor_name}</td>
+                        <td style={{ padding: '0.5rem' }}>{row.tax_id || <em style={{ color: 'var(--color-warning)' }}>missing</em>}</td>
+                        <td style={{ padding: '0.5rem' }}>${row.total_paid.toFixed(2)}</td>
+                        <td style={{ padding: '0.5rem' }}>{row.payment_count}</td>
+                        <td style={{ padding: '0.5rem' }}>
+                          {row.reportable ? <span className="badge badge-warning">Yes</span> : <span className="badge badge-info">No</span>}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+
+              <form onSubmit={handleUpdateVendorTaxInfo} style={{ marginTop: '1.5rem', borderTop: '1px solid var(--border-color)', paddingTop: '1rem', display: 'flex', gap: '0.5rem', flexWrap: 'wrap', alignItems: 'flex-end' }}>
+                <div>
+                  <label>Vendor</label>
+                  <select value={taxInfoVendorId} onChange={(e) => setTaxInfoVendorId(e.target.value)} required>
+                    <option value="">Select vendor...</option>
+                    {vendors.map(v => <option key={v.id} value={v.id}>{v.name}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label>Tax ID (EIN/SSN)</label>
+                  <input value={vendorTaxIdInput} onChange={(e) => setVendorTaxIdInput(e.target.value)} required />
+                </div>
+                <div>
+                  <label>Tax Address</label>
+                  <input value={vendorTaxAddressInput} onChange={(e) => setVendorTaxAddressInput(e.target.value)} required />
+                </div>
+                <button type="submit" className="btn btn-primary">Save Tax Info</button>
+              </form>
+            </div>
+          </div>
+        )}
+
+        {activeTab === 'settings' && (
+          <div className="animate-fade-in">
+            <h2 style={{ fontSize: '1.5rem', fontWeight: 800, marginBottom: '1.5rem' }}>Settings</h2>
+
+            <div className="card" style={{ marginBottom: '2rem', maxWidth: '480px' }}>
+              <h3 style={{ fontSize: '1.1rem', fontWeight: 700, marginBottom: '1rem' }}>Multi-Factor Authentication</h3>
+              {mfaEnabled ? (
+                <>
+                  <p style={{ color: 'var(--color-success)', fontSize: '0.9rem', marginBottom: '1rem' }}>MFA is currently enabled on your account.</p>
+                  <form onSubmit={handleMfaDisable} style={{ display: 'flex', gap: '0.5rem' }}>
+                    <input placeholder="Enter code to disable" value={mfaCodeInput} onChange={(e) => setMfaCodeInput(e.target.value)} required />
+                    <button type="submit" className="btn btn-danger">Disable</button>
+                  </form>
+                </>
+              ) : mfaEnrollUrl ? (
+                <>
+                  <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: '0.5rem' }}>
+                    Scan this into your authenticator app, or enter the secret manually:
+                  </p>
+                  <p style={{ fontFamily: 'monospace', fontSize: '0.85rem', wordBreak: 'break-all', background: '#0e1014', padding: '0.5rem', borderRadius: '6px' }}>{mfaEnrollUrl}</p>
+                  <p style={{ fontFamily: 'monospace', fontSize: '0.85rem', marginTop: '0.5rem' }}>Secret: {mfaEnrollSecret}</p>
+                  <form onSubmit={handleMfaConfirm} style={{ display: 'flex', gap: '0.5rem', marginTop: '1rem' }}>
+                    <input placeholder="Enter code to confirm" value={mfaCodeInput} onChange={(e) => setMfaCodeInput(e.target.value)} required />
+                    <button type="submit" className="btn btn-primary">Confirm</button>
+                  </form>
+                </>
+              ) : (
+                <button className="btn btn-primary" onClick={handleMfaEnroll}>Enable MFA</button>
+              )}
+            </div>
+
+            {user.roles.includes('ADMIN') && (
+              <div className="card" style={{ maxWidth: '640px' }}>
+                <h3 style={{ fontSize: '1.1rem', fontWeight: 700, marginBottom: '1rem' }}>Single Sign-On (SSO)</h3>
+                <form onSubmit={handleCreateSsoConnection} style={{ display: 'flex', gap: '0.5rem', marginBottom: '1.5rem' }}>
+                  <input placeholder="company-domain.com" value={ssoDomainInput} onChange={(e) => setSsoDomainInput(e.target.value)} style={{ flex: 1 }} required />
+                  <button type="submit" className="btn btn-primary">Create Connection</button>
+                </form>
+                {ssoConnections.length === 0 && (
+                  <p style={{ color: 'var(--text-secondary)', fontSize: '0.9rem' }}>No SSO connections configured.</p>
+                )}
+                {ssoConnections.map(c => (
+                  <div key={c.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid var(--border-color)', padding: '0.5rem 0' }}>
+                    <div>
+                      <p style={{ fontWeight: 600, fontSize: '0.9rem' }}>{c.domain}</p>
+                      <p style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>{c.provider}</p>
+                    </div>
+                    <span className={`badge ${c.status === 'ACTIVE' ? 'badge-success' : 'badge-warning'}`}>{c.status}</span>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         )}
       </div>

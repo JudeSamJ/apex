@@ -62,6 +62,7 @@ class UserMeOut(BaseModel):
     active_entity_id: str
     roles: List[str]
     accessible_departments: Optional[List[str]] = None
+    mfa_enabled: bool = False
 
 @router.post("/register", response_model=TokenResponse)
 def register(user_in: UserRegister, db: Session = Depends(get_db)):
@@ -234,14 +235,16 @@ def mfa_verify_login(body: MfaVerifyLoginIn, db: Session = Depends(get_db)):
     return {"access_token": access_token, "token_type": "bearer"}
 
 @router.get("/me", response_model=UserMeOut)
-def get_me(current_user: UserContext = Depends(get_current_user_context)):
+def get_me(current_user: UserContext = Depends(get_current_user_context), db: Session = Depends(get_db)):
+    user = db.query(User).filter(User.id == current_user.user_id).first()
     return {
         "id": current_user.user_id,
         "email": current_user.email,
         "name": current_user.name,
         "active_entity_id": current_user.active_entity_id,
         "roles": current_user.roles,
-        "accessible_departments": current_user.accessible_departments
+        "accessible_departments": current_user.accessible_departments,
+        "mfa_enabled": bool(user and user.mfa_enabled)
     }
 
 @router.post("/seed")
