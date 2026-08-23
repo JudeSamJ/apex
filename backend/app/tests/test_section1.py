@@ -14,6 +14,12 @@ from app.transactions.models import PipelineEvent, Transaction
 from app.entities_rbac.models import Entity, Department, User, OnboardingStatus
 from app.cards.models import SpendProgram, Card
 from app.entities_rbac.auth import get_password_hash
+# Transaction.gl_account_id has a string FK to gl_accounts.id, so that table
+# must be registered on Base.metadata before create_all() — importing the
+# owning model is what registers it. Without this, running this file in
+# isolation (not after another test module happens to import it first) fails
+# with NoReferencedTableError.
+from app.accounting.models import GLAccount
 
 SQLALCHEMY_DATABASE_URL = "sqlite:///./test_section1.db"
 engine = create_engine(SQLALCHEMY_DATABASE_URL, connect_args={"check_same_thread": False})
@@ -32,6 +38,11 @@ TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engin
 @pytest.fixture
 def db():
     import os
+    # Dispose the pool first: this fixture runs once per test (function
+    # scope), and a pooled connection left open from the previous test can
+    # still be attached to the just-deleted file's inode, which makes SQLite
+    # report the freshly recreated file as "readonly" on the next test.
+    engine.dispose()
     for f in ["./test_section1.db", "./test_section1_ledger.db"]:
         if os.path.exists(f):
             os.remove(f)
@@ -40,6 +51,7 @@ def db():
     yield session
     session.close()
     Base.metadata.drop_all(bind=engine)
+    engine.dispose()
     for f in ["./test_section1.db", "./test_section1_ledger.db"]:
         if os.path.exists(f):
             os.remove(f)
@@ -181,7 +193,7 @@ def test_pipeline_events_are_idempotent(db):
     assert events[0].event_type in PIPELINE_EVENT_TYPES
 
 
-def test_spend_program_limit_blocks_swipe(client, db_session):
+def test_spend_program_limit_blocks_swipe(db):
     """Spend program aggregate limit is enforced separately from card limit."""
     from fastapi.testclient import TestClient
     from app.main import app as fastapi_app
@@ -191,22 +203,22 @@ def test_spend_program_limit_blocks_swipe(client, db_session):
 
     # Reuse fixtures from test_flow if available — inline minimal setup
     for role_id in ["ADMIN", "EMPLOYEE", "MANAGER"]:
-        db_session.add(Role(id=role_id, name=role_id))
+        db.add(Role(id=role_id, name=role_id))
     entity = Entity(name="Limit Co", onboarding_status=OnboardingStatus.APPROVED.value)
-    db_session.add(entity)
-    db_session.flush()
+    db.add(entity)
+    db.flush()
     dept = Department(name="Sales", entity_id=entity.id)
-    db_session.add(dept)
-    db_session.flush()
+    db.add(dept)
+    db.flush()
 
     from app.entities_rbac.auth import get_password_hash
     admin = User(name="Admin", email="admin@limit.com", entity_id=entity.id, password_hash=get_password_hash("pw"))
     emp = User(name="Emp", email="emp@limit.com", entity_id=entity.id, password_hash=get_password_hash("pw"))
-    db_session.add_all([admin, emp])
-    db_session.flush()
-    db_session.add(UserRole(user_id=admin.id, role_id="ADMIN", entity_id=entity.id))
-    db_session.add(UserRole(user_id=emp.id, role_id="EMPLOYEE", entity_id=entity.id, department_id=dept.id))
-    db_session.flush()
+    db.add_all([admin, emp])
+    db.flush()
+    db.add(UserRole(user_id=admin.id, role_id="ADMIN", entity_id=entity.id))
+    db.add(UserRole(user_id=emp.id, role_id="EMPLOYEE", entity_id=entity.id, department_id=dept.id))
+    db.flush()
 
     program = SpendProgram(
         entity_id=entity.id,
@@ -214,8 +226,8 @@ def test_spend_program_limit_blocks_swipe(client, db_session):
         limit_amount=Decimal("300"),
         limit_type="MONTHLY",
     )
-    db_session.add(program)
-    db_session.flush()
+    db.add(program)
+    db.flush()
 
     card = Card(
         entity_id=entity.id,
@@ -228,11 +240,11 @@ def test_spend_program_limit_blocks_swipe(client, db_session):
         masked_pan="**** **** **** 9999",
         card_token="tok_limit",
     )
-    db_session.add(card)
-    db_session.commit()
+    db.add(card)
+    db.commit()
 
     def override_get_db():
-        yield db_session
+        yield db
 
     fastapi_app.dependency_overrides[get_db] = override_get_db
     with TestClient(fastapi_app) as client:

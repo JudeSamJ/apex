@@ -26,15 +26,10 @@ def connect(dbapi_connection, connection_record):
 
 TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
-# Override the session factory globally for test database redirection
 import app.database
 import app.transactions.tasks
 import app.bills.router
 import app.reimbursements.router
-app.database.SessionLocal = TestingSessionLocal
-app.transactions.tasks.SessionLocal = TestingSessionLocal
-app.bills.router.SessionLocal = TestingSessionLocal
-app.reimbursements.router.SessionLocal = TestingSessionLocal
 
 @pytest.fixture(scope="module")
 def db_session():
@@ -44,6 +39,17 @@ def db_session():
                 os.remove(f)
             except Exception:
                 pass
+
+    # Redirect the session factory here (fixture setup), not at module import
+    # time — pytest imports every test module during collection before
+    # running any test, so a module-level assignment would let whichever
+    # test file is collected last silently win this global for the entire
+    # session, pointing every other module's DB-touching code at the wrong
+    # engine.
+    app.database.SessionLocal = TestingSessionLocal
+    app.transactions.tasks.SessionLocal = TestingSessionLocal
+    app.bills.router.SessionLocal = TestingSessionLocal
+    app.reimbursements.router.SessionLocal = TestingSessionLocal
 
     Base.metadata.create_all(bind=engine)
     db = TestingSessionLocal()

@@ -31,7 +31,6 @@ def connect(dbapi_connection, connection_record):
 
 TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
-# Override the session factory globally for test database redirection
 import app.database
 import app.transactions.tasks
 import app.approvals.router
@@ -41,15 +40,6 @@ import app.accounting.router
 import app.insights.router
 import app.reporting.router
 
-app.database.SessionLocal = TestingSessionLocal
-app.transactions.tasks.SessionLocal = TestingSessionLocal
-app.approvals.router.SessionLocal = TestingSessionLocal
-app.bills.router.SessionLocal = TestingSessionLocal
-app.reimbursements.router.SessionLocal = TestingSessionLocal
-app.accounting.router.SessionLocal = TestingSessionLocal
-app.insights.router.SessionLocal = TestingSessionLocal
-app.reporting.router.SessionLocal = TestingSessionLocal
-
 @pytest.fixture(scope="module")
 def db_session():
     for f in ["./test.db", "./test_ledger.db"]:
@@ -58,6 +48,21 @@ def db_session():
                 os.remove(f)
             except Exception:
                 pass
+
+    # Redirect the session factory here (fixture setup), not at module import
+    # time — pytest imports every test module during collection before
+    # running any test, so a module-level assignment would let whichever
+    # test file is collected last silently win this global for the entire
+    # session, pointing every other module's DB-touching code at the wrong
+    # engine.
+    app.database.SessionLocal = TestingSessionLocal
+    app.transactions.tasks.SessionLocal = TestingSessionLocal
+    app.approvals.router.SessionLocal = TestingSessionLocal
+    app.bills.router.SessionLocal = TestingSessionLocal
+    app.reimbursements.router.SessionLocal = TestingSessionLocal
+    app.accounting.router.SessionLocal = TestingSessionLocal
+    app.insights.router.SessionLocal = TestingSessionLocal
+    app.reporting.router.SessionLocal = TestingSessionLocal
 
     Base.metadata.create_all(bind=engine)
     db = TestingSessionLocal()
@@ -162,10 +167,15 @@ def test_phase3_full_flow(client, db_session):
     assert response.status_code == 200
 
     # 7. Seed budget
+    # Budgeted spend is matched against transactions by "YYYY-MM" period, and
+    # transactions below get today's real created_at — so the period must
+    # track the actual current month, not a fixed string, or this silently
+    # breaks every month it isn't run in.
+    current_period = datetime.utcnow().strftime("%Y-%m")
     response = client.post("/api/reporting/budgets", headers=admin_headers, json={
         "department_id": dept.id,
         "category": "Software & SaaS",
-        "period": "2026-07",
+        "period": current_period,
         "amount": 1000.0
     })
     assert response.status_code == 200

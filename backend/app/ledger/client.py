@@ -110,6 +110,20 @@ class LedgerClient:
         ).all()
 
         if not held_entries:
+            # Nothing HELD doesn't necessarily mean nothing to do: when the
+            # settlement amount exactly matches the hold, no adjusting entry
+            # is created below, so the settlement's own idempotency_key is
+            # never persisted anywhere — the early idempotency check above
+            # can't catch a retry in that case. Fall back to checking whether
+            # this transaction was already settled and treat that as a
+            # successful idempotent replay rather than an error; only a
+            # transaction with no hold history at all is a real error.
+            settled_entries = db.query(LedgerEntry).filter(
+                LedgerEntry.transaction_id == transaction_id,
+                LedgerEntry.state == LedgerState.SETTLED.value
+            ).all()
+            if settled_entries:
+                return settled_entries
             raise ValueError(f"No HELD ledger entries found for transaction {transaction_id}")
 
         hold_amount = held_entries[0].amount

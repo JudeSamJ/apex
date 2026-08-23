@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
-from typing import List, Optional
+from typing import Any, List, Optional
 
 from app.database import get_db
 from app.entities_rbac.auth import get_current_user_context, UserContext
@@ -18,7 +18,7 @@ class ScreeningOut(BaseModel):
     subject_name: str
     provider: str
     status: str
-    match_details: Optional[dict] = None
+    match_details: Optional[Any] = None
     created_at: str
 
 

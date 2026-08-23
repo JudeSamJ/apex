@@ -20,33 +20,39 @@ from app.ledger.client import LedgerClient
 from app.rate_limit import check_rate_limit, _request_history
 
 # Setup in-memory sqlite connection for hardening test run
-SQLALCHEMY_DATABASE_URL = "sqlite:///./test.db"
+SQLALCHEMY_DATABASE_URL = "sqlite:///./test_hardening.db"
 engine = create_engine(SQLALCHEMY_DATABASE_URL, connect_args={"check_same_thread": False})
 
 @event.listens_for(engine, "connect")
 def connect(dbapi_connection, connection_record):
     cursor = dbapi_connection.cursor()
-    cursor.execute("ATTACH DATABASE './test_ledger.db' AS ledger;")
+    cursor.execute("ATTACH DATABASE './test_hardening_ledger.db' AS ledger;")
     cursor.close()
 
 TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
-# Redirect database references
 import app.database
 import app.transactions.tasks
-app.database.SessionLocal = TestingSessionLocal
-app.transactions.tasks.SessionLocal = TestingSessionLocal
 
 client = TestClient(fastapi_app)
 
 @pytest.fixture(scope="module", autouse=True)
 def db_session():
-    for f in ["./test.db", "./test_ledger.db"]:
+    for f in ["./test_hardening.db", "./test_hardening_ledger.db"]:
         if os.path.exists(f):
             try:
                 os.remove(f)
             except Exception:
                 pass
+
+    # Redirect the session factory here (fixture setup), not at module import
+    # time — pytest imports every test module during collection before
+    # running any test, so a module-level assignment would let whichever
+    # test file is collected last silently win this global for the entire
+    # session, pointing every other module's DB-touching code at the wrong
+    # engine.
+    app.database.SessionLocal = TestingSessionLocal
+    app.transactions.tasks.SessionLocal = TestingSessionLocal
 
     Base.metadata.create_all(bind=engine)
     db = TestingSessionLocal()
@@ -55,7 +61,7 @@ def db_session():
     finally:
         db.close()
         Base.metadata.drop_all(bind=engine)
-        for f in ["./test.db", "./test_ledger.db"]:
+        for f in ["./test_hardening.db", "./test_hardening_ledger.db"]:
             if os.path.exists(f):
                 try:
                     os.remove(f)
@@ -372,6 +378,16 @@ def test_vendor_sanctions_screening_flags_hit_and_blocks_payment(db_session):
     ).first()
     assert screening_row is not None
     assert screening_row.status == "HIT"
+
+    # The screening list endpoint must actually serialize (match_details is a
+    # list of matches for CLEAR/HIT results, not a dict — a response_model
+    # typed as Optional[dict] 500s here instead of returning JSON).
+    screening_list = client.get("/api/screening", headers=headers)
+    assert screening_list.status_code == 200
+    hit_entry = next(r for r in screening_list.json() if r["subject_id"] == flagged_vendor_id)
+    assert hit_entry["status"] == "HIT"
+    assert isinstance(hit_entry["match_details"], list)
+    assert len(hit_entry["match_details"]) >= 1
 
     # A bill against the flagged vendor cannot be paid, even once approved.
     bill = Bill(
