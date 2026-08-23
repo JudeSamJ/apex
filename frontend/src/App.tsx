@@ -190,6 +190,17 @@ interface SSOConnection {
   created_at: string;
 }
 
+interface PendingUser {
+  id: string;
+  email: string;
+  name: string;
+  requested_role_id: string | null;
+  requested_department_id: string | null;
+  created_at: string | null;
+}
+
+const ROLE_OPTIONS = ['EMPLOYEE', 'MANAGER', 'AP_APPROVER', 'BOOKKEEPER', 'ADMIN'];
+
 interface ApprovalStep {
   id: string;
   approval_id: string;
@@ -378,6 +389,24 @@ export default function App() {
   const [ssoEmailInput, setSsoEmailInput] = useState<string>('');
   const [ssoLoginError, setSsoLoginError] = useState<string | null>(null);
 
+  // Self-registration state
+  const [showRegister, setShowRegister] = useState<boolean>(false);
+  const [registerEntities, setRegisterEntities] = useState<Entity[]>([]);
+  const [registerDepartments, setRegisterDepartments] = useState<Department[]>([]);
+  const [regName, setRegName] = useState<string>('');
+  const [regEmail, setRegEmail] = useState<string>('');
+  const [regPassword, setRegPassword] = useState<string>('');
+  const [regEntityId, setRegEntityId] = useState<string>('');
+  const [regRoleId, setRegRoleId] = useState<string>('EMPLOYEE');
+  const [regDepartmentId, setRegDepartmentId] = useState<string>('');
+  const [registerMessage, setRegisterMessage] = useState<string | null>(null);
+  const [registerError, setRegisterError] = useState<string | null>(null);
+
+  // Admin: pending user registrations awaiting approval
+  const [pendingUsers, setPendingUsers] = useState<PendingUser[]>([]);
+  const [pendingApproveRole, setPendingApproveRole] = useState<Record<string, string>>({});
+  const [pendingApproveDept, setPendingApproveDept] = useState<Record<string, string>>({});
+
   // Tab control
   const [activeTab, setActiveTab] = useState<'dashboard' | 'cards' | 'bills' | 'reimbursements' | 'transactions' | 'approvals' | 'accounting' | 'insights' | 'ops' | 'settings'>('dashboard');
 
@@ -484,6 +513,9 @@ export default function App() {
           fetchBackgroundJobs();
           fetchOpsSummary();
         }
+        if (user.roles.includes('ADMIN')) {
+          fetchPendingUsers();
+        }
       }, 5000);
     }
     return () => clearInterval(interval);
@@ -529,6 +561,7 @@ export default function App() {
       }
       if (user.roles.includes('ADMIN')) {
         fetchSsoConnections();
+        fetchPendingUsers();
       }
     }
   }, [user, activeEntityId]);
@@ -599,6 +632,8 @@ export default function App() {
     setMfaEnrollSecret(null);
     setMfaEnrollUrl(null);
     setMfaChallengeToken(null);
+    setPendingUsers([]);
+    setShowRegister(false);
   };
 
   const handleLogin = async (e: React.FormEvent) => {
@@ -617,7 +652,8 @@ export default function App() {
       });
 
       if (!res.ok) {
-        throw new Error('Invalid email or password');
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.detail || 'Invalid email or password');
       }
 
       const data = await res.json();
@@ -711,6 +747,119 @@ export default function App() {
   const handleQuickLogin = (email: string) => {
     setEmailInput(email);
     setPasswordInput('password123');
+  };
+
+  // Pre-login (public) company/department lookups for the registration form
+  const fetchRegisterEntities = async () => {
+    try {
+      const res = await fetch(`${API_BASE}/api/auth/entities`);
+      if (res.ok) setRegisterEntities(await res.json());
+    } catch (e) { console.error(e); }
+  };
+
+  useEffect(() => {
+    if (showRegister) fetchRegisterEntities();
+  }, [showRegister]);
+
+  useEffect(() => {
+    if (!regEntityId) {
+      setRegisterDepartments([]);
+      return;
+    }
+    (async () => {
+      try {
+        const res = await fetch(`${API_BASE}/api/auth/entities/${regEntityId}/departments`);
+        if (res.ok) setRegisterDepartments(await res.json());
+      } catch (e) { console.error(e); }
+    })();
+  }, [regEntityId]);
+
+  const handleRegister = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setRegisterError(null);
+    setRegisterMessage(null);
+    setLoading(true);
+    try {
+      const res = await fetch(`${API_BASE}/api/auth/register`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: regName,
+          email: regEmail,
+          password: regPassword,
+          entity_id: regEntityId,
+          requested_role_id: regRoleId,
+          requested_department_id: regDepartmentId || null
+        })
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(data.detail || 'Registration failed');
+      }
+      setRegisterMessage(data.message || 'Registration submitted for admin approval.');
+      setRegName('');
+      setRegEmail('');
+      setRegPassword('');
+      setRegEntityId('');
+      setRegDepartmentId('');
+    } catch (err: any) {
+      setRegisterError(err.message || 'Registration failed');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // --- Admin: pending user registrations ---
+  const fetchPendingUsers = async () => {
+    try {
+      const res = await fetch(`${API_BASE}/api/auth/pending-users`, { headers: getHeaders() });
+      if (res.ok) setPendingUsers(await res.json());
+    } catch (e) { console.error(e); }
+  };
+
+  const handleApproveUser = async (userId: string) => {
+    setErrorMessage(null);
+    setSuccessMessage(null);
+    try {
+      const pu = pendingUsers.find(p => p.id === userId);
+      // Fall back to what the select is actually showing (the requested
+      // role/department) when the admin approves without touching it —
+      // otherwise a silent null would override the visible default.
+      const roleId = pendingApproveRole[userId] ?? pu?.requested_role_id ?? 'EMPLOYEE';
+      const departmentId = (pendingApproveDept[userId] ?? pu?.requested_department_id) || null;
+      const res = await fetch(`${API_BASE}/api/auth/users/${userId}/approve`, {
+        method: 'POST',
+        headers: { ...getHeaders(), 'Content-Type': 'application/json' },
+        body: JSON.stringify({ role_id: roleId, department_id: departmentId })
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.detail || 'Failed to approve user');
+      }
+      setSuccessMessage('User approved.');
+      fetchPendingUsers();
+    } catch (err: any) {
+      setErrorMessage(err.message);
+    }
+  };
+
+  const handleRejectUser = async (userId: string) => {
+    setErrorMessage(null);
+    setSuccessMessage(null);
+    try {
+      const res = await fetch(`${API_BASE}/api/auth/users/${userId}/reject`, {
+        method: 'POST',
+        headers: getHeaders()
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.detail || 'Failed to reject user');
+      }
+      setSuccessMessage('User rejected.');
+      fetchPendingUsers();
+    } catch (err: any) {
+      setErrorMessage(err.message);
+    }
   };
 
   const fetchEntities = async () => {
@@ -1722,7 +1871,69 @@ export default function App() {
             <h1 style={{ fontSize: '1.75rem', fontWeight: 800, fontFamily: 'Outfit', letterSpacing: '0.05em' }}>APEX PORTAL</h1>
           </div>
           
-          {mfaChallengeToken ? (
+          {showRegister ? (
+            <form onSubmit={handleRegister} style={{ display: 'flex', flexDirection: 'column', gap: '1.1rem' }}>
+              {registerError && (
+                <div style={{ color: 'var(--color-danger)', fontSize: '0.9rem', display: 'flex', gap: '0.25rem', alignItems: 'center' }}>
+                  <ShieldAlert size={16} />
+                  <span>{registerError}</span>
+                </div>
+              )}
+              {registerMessage && (
+                <div style={{ color: 'var(--color-success)', fontSize: '0.85rem' }}>{registerMessage}</div>
+              )}
+              <div>
+                <label>Full Name</label>
+                <input type="text" value={regName} onChange={(e) => setRegName(e.target.value)} required />
+              </div>
+              <div>
+                <label>Work Email</label>
+                <input type="email" value={regEmail} onChange={(e) => setRegEmail(e.target.value)} required />
+              </div>
+              <div>
+                <label>Password</label>
+                <input type="password" value={regPassword} onChange={(e) => setRegPassword(e.target.value)} required minLength={8} />
+              </div>
+              <div>
+                <label>Company</label>
+                <select value={regEntityId} onChange={(e) => setRegEntityId(e.target.value)} required>
+                  <option value="">Select your company...</option>
+                  {registerEntities.map(ent => (
+                    <option key={ent.id} value={ent.id}>{ent.name}</option>
+                  ))}
+                </select>
+              </div>
+              <div style={{ display: 'flex', gap: '0.75rem' }}>
+                <div style={{ flex: 1 }}>
+                  <label>Requested Role</label>
+                  <select value={regRoleId} onChange={(e) => setRegRoleId(e.target.value)}>
+                    {ROLE_OPTIONS.map(r => <option key={r} value={r}>{r}</option>)}
+                  </select>
+                </div>
+                <div style={{ flex: 1 }}>
+                  <label>Department (optional)</label>
+                  <select value={regDepartmentId} onChange={(e) => setRegDepartmentId(e.target.value)}>
+                    <option value="">None</option>
+                    {registerDepartments.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}
+                  </select>
+                </div>
+              </div>
+              <p style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>
+                Your account will be created as <strong>pending</strong> — an admin at your company must approve it before you can sign in.
+              </p>
+              <button type="submit" className="btn btn-primary" style={{ width: '100%' }}>
+                Submit Registration Request
+              </button>
+              <button
+                type="button"
+                className="btn btn-secondary"
+                style={{ width: '100%' }}
+                onClick={() => { setShowRegister(false); setRegisterError(null); setRegisterMessage(null); }}
+              >
+                Back to Sign In
+              </button>
+            </form>
+          ) : mfaChallengeToken ? (
             <form onSubmit={handleMfaVerifyLogin} style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
               {errorMessage && (
                 <div style={{ color: 'var(--color-danger)', fontSize: '0.9rem', display: 'flex', gap: '0.25rem', alignItems: 'center' }}>
@@ -1788,10 +1999,18 @@ export default function App() {
             <button type="submit" className="btn btn-primary" style={{ width: '100%', marginTop: '0.5rem' }}>
               Sign In
             </button>
+            <button
+              type="button"
+              className="btn btn-secondary"
+              style={{ width: '100%', fontSize: '0.85rem' }}
+              onClick={() => { setShowRegister(true); setErrorMessage(null); }}
+            >
+              Create an account
+            </button>
           </form>
           )}
 
-          {!mfaChallengeToken && (
+          {!mfaChallengeToken && !showRegister && (
           <div style={{ marginTop: '1.5rem', borderTop: '1px solid var(--border-color)', paddingTop: '1.25rem' }}>
             <form onSubmit={handleSsoLogin} style={{ display: 'flex', gap: '0.5rem' }}>
               <input
@@ -1812,7 +2031,7 @@ export default function App() {
           </div>
           )}
 
-          {!mfaChallengeToken && (
+          {!mfaChallengeToken && !showRegister && (
           <div style={{ marginTop: '2rem', borderTop: '1px solid var(--border-color)', paddingTop: '1.5rem' }}>
             <p style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', marginBottom: '0.75rem', textAlign: 'center' }}>
               Quick Switch Role Profiles
@@ -1950,9 +2169,9 @@ export default function App() {
               >
                 <Shield size={18} />
                 <span>Ops Center</span>
-                {opsSummary && opsSummary.open_disputes + opsSummary.open_reconciliation_discrepancies > 0 && (
+                {(opsSummary && opsSummary.open_disputes + opsSummary.open_reconciliation_discrepancies + pendingUsers.length > 0) && (
                   <span className="badge badge-danger" style={{ position: 'absolute', right: '12px', fontSize: '0.7rem' }}>
-                    {opsSummary.open_disputes + opsSummary.open_reconciliation_discrepancies}
+                    {opsSummary.open_disputes + opsSummary.open_reconciliation_discrepancies + pendingUsers.length}
                   </span>
                 )}
               </button>
@@ -3436,6 +3655,51 @@ export default function App() {
                   <p style={{ color: 'var(--text-secondary)', fontSize: '0.85rem' }}>Unread Admin Notifications</p>
                   <p style={{ fontSize: '1.75rem', fontWeight: 800 }}>{opsSummary.unread_admin_notifications}</p>
                 </div>
+              </div>
+            )}
+
+            {user.roles.includes('ADMIN') && (
+              <div className="card" style={{ marginBottom: '2rem' }}>
+                <h3 style={{ fontSize: '1.1rem', fontWeight: 700, marginBottom: '1rem' }}>
+                  Pending User Approvals
+                  {pendingUsers.length > 0 && (
+                    <span className="badge badge-warning" style={{ marginLeft: '0.5rem', fontSize: '0.7rem' }}>{pendingUsers.length}</span>
+                  )}
+                </h3>
+                {pendingUsers.length === 0 && (
+                  <p style={{ color: 'var(--text-secondary)', fontSize: '0.9rem' }}>No pending registration requests.</p>
+                )}
+                {pendingUsers.map(pu => (
+                  <div key={pu.id} style={{ borderBottom: '1px solid var(--border-color)', padding: '0.75rem 0', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '0.75rem' }}>
+                    <div>
+                      <p style={{ fontWeight: 600, fontSize: '0.9rem' }}>{pu.name} <span style={{ color: 'var(--text-secondary)', fontWeight: 400 }}>({pu.email})</span></p>
+                      <p style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>
+                        Requested {pu.requested_role_id || 'EMPLOYEE'}
+                        {pu.requested_department_id ? ` — ${departments.find(d => d.id === pu.requested_department_id)?.name || pu.requested_department_id}` : ''}
+                        {pu.created_at ? ` — ${new Date(pu.created_at).toLocaleDateString()}` : ''}
+                      </p>
+                    </div>
+                    <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+                      <select
+                        value={pendingApproveRole[pu.id] ?? pu.requested_role_id ?? 'EMPLOYEE'}
+                        onChange={(e) => setPendingApproveRole(prev => ({ ...prev, [pu.id]: e.target.value }))}
+                        style={{ fontSize: '0.8rem', padding: '0.35rem' }}
+                      >
+                        {ROLE_OPTIONS.map(r => <option key={r} value={r}>{r}</option>)}
+                      </select>
+                      <select
+                        value={pendingApproveDept[pu.id] ?? pu.requested_department_id ?? ''}
+                        onChange={(e) => setPendingApproveDept(prev => ({ ...prev, [pu.id]: e.target.value }))}
+                        style={{ fontSize: '0.8rem', padding: '0.35rem' }}
+                      >
+                        <option value="">No department</option>
+                        {departments.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}
+                      </select>
+                      <button className="btn btn-primary" style={{ fontSize: '0.8rem' }} onClick={() => handleApproveUser(pu.id)}>Approve</button>
+                      <button className="btn btn-secondary" style={{ fontSize: '0.8rem', color: 'var(--color-danger)' }} onClick={() => handleRejectUser(pu.id)}>Reject</button>
+                    </div>
+                  </div>
+                ))}
               </div>
             )}
 

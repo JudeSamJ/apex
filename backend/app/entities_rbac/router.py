@@ -8,7 +8,7 @@ from typing import List, Optional
 from decimal import Decimal
 
 from app.database import get_db
-from app.entities_rbac.models import Entity, Department, User, Role, UserRole, OnboardingStatus
+from app.entities_rbac.models import Entity, Department, User, Role, UserRole, OnboardingStatus, UserStatus
 from app.entities_rbac.auth import (
     get_password_hash,
     verify_password,
@@ -18,16 +18,32 @@ from app.entities_rbac.auth import (
     get_current_user_context,
     UserContext
 )
-from app.kyc.client import get_didit_client
-from app.screening.service import screen_subject
-
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
 class UserRegister(BaseModel):
     name: str
     email: EmailStr
     password: str
-    entity_name: str  # Creates a new entity on signup
+    entity_id: str  # The existing company the registrant is asking to join
+    requested_role_id: str
+    requested_department_id: Optional[str] = None
+
+class RegisterResponse(BaseModel):
+    message: str
+    user_id: str
+    status: str
+
+class PendingUserOut(BaseModel):
+    id: str
+    email: str
+    name: str
+    requested_role_id: Optional[str] = None
+    requested_department_id: Optional[str] = None
+    created_at: Optional[str] = None
+
+class ApproveUserIn(BaseModel):
+    role_id: str
+    department_id: Optional[str] = None
 
 class TokenResponse(BaseModel):
     access_token: str
@@ -64,82 +80,49 @@ class UserMeOut(BaseModel):
     accessible_departments: Optional[List[str]] = None
     mfa_enabled: bool = False
 
-@router.post("/register", response_model=TokenResponse)
+@router.post("/register", response_model=RegisterResponse)
 def register(user_in: UserRegister, db: Session = Depends(get_db)):
-    # Check duplicate
+    """Self-registration into an EXISTING company. The account is created
+    PENDING with no role/access — it cannot log in until an admin on that
+    entity approves it via POST /users/{id}/approve."""
     existing_user = db.query(User).filter(User.email == user_in.email).first()
     if existing_user:
         raise HTTPException(status_code=400, detail="Email already registered")
 
-    # Ensure roles exist
-    required_roles = ["ADMIN", "MANAGER", "EMPLOYEE", "BOOKKEEPER", "AP_APPROVER"]
-    for role_id in required_roles:
-        role = db.query(Role).filter(Role.id == role_id).first()
-        if not role:
-            db.add(Role(id=role_id, name=role_id.replace("_", " ").title()))
-    db.commit()
+    entity = db.query(Entity).filter(Entity.id == user_in.entity_id).first()
+    if not entity:
+        raise HTTPException(status_code=404, detail="Company not found")
 
-    # Create Entity with pending onboarding status
-    entity = Entity(
-        name=user_in.entity_name,
-        onboarding_status=OnboardingStatus.PENDING.value
-    )
-    db.add(entity)
-    db.flush()
+    role = db.query(Role).filter(Role.id == user_in.requested_role_id).first()
+    if not role:
+        raise HTTPException(status_code=400, detail=f"Unknown role: {user_in.requested_role_id}")
 
-    # AML/OFAC sanctions screening on the entity name, run alongside KYC/KYB
-    screening = screen_subject(db, "ENTITY", entity.id, entity.name)
+    if user_in.requested_department_id:
+        dept = db.query(Department).filter(
+            Department.id == user_in.requested_department_id,
+            Department.entity_id == entity.id
+        ).first()
+        if not dept:
+            raise HTTPException(status_code=400, detail="Department not found for this company")
 
-    # Trigger KYC/KYB verification via Didit
-    try:
-        didit_client = get_didit_client()
-        verification = didit_client.create_verification(
-            entity_id=entity.id,
-            entity_name=entity.name,
-            entity_type="business",  # Default to business for B2B platform
-            email=user_in.email
-        )
-        
-        # Store verification ID on entity
-        entity.verification_id = verification["verification_id"]
-        entity.verification_url = verification.get("verification_url")
-        
-        # For demo/sandbox mode, auto-approve after verification creation
-        # In production, this would wait for webhook callback. A sanctions
-        # screening HIT always overrides auto-approval — an admin must clear it.
-        if screening.status != "HIT" and os.getenv("AUTO_APPROVE_ONBOARDING", "False").lower() in ["true", "1"]:
-            entity.onboarding_status = OnboardingStatus.APPROVED.value
-        
-        db.commit()
-        
-    except Exception as e:
-        # Log error but don't fail registration - entity stays in PENDING
-        import logging
-        logger = logging.getLogger(__name__)
-        logger.error(f"Failed to create Didit verification: {e}")
-        db.commit()
-
-    # Create User
     user = User(
         name=user_in.name,
         email=user_in.email,
         entity_id=entity.id,
-        password_hash=get_password_hash(user_in.password)
+        password_hash=get_password_hash(user_in.password),
+        status=UserStatus.PENDING.value,
+        requested_role_id=user_in.requested_role_id,
+        requested_department_id=user_in.requested_department_id
     )
     db.add(user)
-    db.flush()
-
-    # Assign Admin Role
-    user_role = UserRole(
-        user_id=user.id,
-        role_id="ADMIN",
-        entity_id=entity.id
-    )
-    db.add(user_role)
     db.commit()
+    db.refresh(user)
 
-    access_token = create_access_token(data={"sub": user.id})
-    return {"access_token": access_token, "token_type": "bearer"}
+    return {
+        "message": "Registration submitted. An admin at your company must approve your account before you can log in.",
+        "user_id": user.id,
+        "status": user.status
+    }
 
 @router.post("/token", response_model=LoginResponse)
 def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
@@ -149,6 +132,17 @@ def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depend
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect username or password",
             headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    if user.status == UserStatus.PENDING.value:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Your account is pending admin approval. You'll be able to sign in once an admin at your company approves it."
+        )
+    if user.status == UserStatus.REJECTED.value:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Your registration request was declined. Contact your company admin for details."
         )
 
     if user.mfa_enabled:
@@ -418,4 +412,98 @@ def update_entity_status(
     entity.onboarding_status = status
     db.commit()
     return {"message": "Entity status updated successfully", "entity_id": entity_id, "status": status}
+
+@router.get("/entities/{entity_id}/departments", response_model=List[DepartmentOut])
+def list_departments_for_entity(entity_id: str, db: Session = Depends(get_db)):
+    """Public (pre-login) department listing for a specific company, used by
+    the registration form's department picker."""
+    return db.query(Department).filter(Department.entity_id == entity_id).all()
+
+@router.get("/pending-users", response_model=List[PendingUserOut])
+def list_pending_users(
+    current_user: UserContext = Depends(get_current_user_context),
+    db: Session = Depends(get_db)
+):
+    if not current_user.is_admin:
+        raise HTTPException(status_code=403, detail="Only Admins can view pending registrations")
+
+    rows = db.query(User).filter(
+        User.entity_id == current_user.active_entity_id,
+        User.status == UserStatus.PENDING.value
+    ).order_by(User.created_at.asc()).all()
+
+    return [
+        {
+            "id": u.id,
+            "email": u.email,
+            "name": u.name,
+            "requested_role_id": u.requested_role_id,
+            "requested_department_id": u.requested_department_id,
+            "created_at": u.created_at.isoformat() if u.created_at else None
+        }
+        for u in rows
+    ]
+
+@router.post("/users/{user_id}/approve")
+def approve_user(
+    user_id: str,
+    body: ApproveUserIn,
+    current_user: UserContext = Depends(get_current_user_context),
+    db: Session = Depends(get_db)
+):
+    if not current_user.is_admin:
+        raise HTTPException(status_code=403, detail="Only Admins can approve registrations")
+
+    user = db.query(User).filter(
+        User.id == user_id,
+        User.entity_id == current_user.active_entity_id
+    ).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="Pending user not found")
+    if user.status != UserStatus.PENDING.value:
+        raise HTTPException(status_code=400, detail=f"User is already {user.status}, not PENDING")
+
+    role = db.query(Role).filter(Role.id == body.role_id).first()
+    if not role:
+        raise HTTPException(status_code=400, detail=f"Unknown role: {body.role_id}")
+
+    if body.department_id:
+        dept = db.query(Department).filter(
+            Department.id == body.department_id,
+            Department.entity_id == current_user.active_entity_id
+        ).first()
+        if not dept:
+            raise HTTPException(status_code=400, detail="Department not found for this company")
+
+    db.add(UserRole(
+        user_id=user.id,
+        role_id=body.role_id,
+        entity_id=current_user.active_entity_id,
+        department_id=body.department_id
+    ))
+    user.status = UserStatus.ACTIVE.value
+    db.commit()
+    return {"message": f"{user.email} approved as {body.role_id}.", "user_id": user.id, "status": user.status}
+
+@router.post("/users/{user_id}/reject")
+def reject_user(
+    user_id: str,
+    current_user: UserContext = Depends(get_current_user_context),
+    db: Session = Depends(get_db)
+):
+    if not current_user.is_admin:
+        raise HTTPException(status_code=403, detail="Only Admins can reject registrations")
+
+    user = db.query(User).filter(
+        User.id == user_id,
+        User.entity_id == current_user.active_entity_id
+    ).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="Pending user not found")
+    if user.status != UserStatus.PENDING.value:
+        raise HTTPException(status_code=400, detail=f"User is already {user.status}, not PENDING")
+
+    user.status = UserStatus.REJECTED.value
+    db.commit()
+    return {"message": f"{user.email} rejected.", "user_id": user.id, "status": user.status}
 

@@ -7,6 +7,16 @@ from app.secrets.provider import get_secret
 # so it goes through the secrets provider rather than a bare os.getenv().
 DATABASE_URL = get_secret("DATABASE_URL", "sqlite:///./ramp_clone.db")
 
+# Cloud Postgres providers (Neon, Supabase, RDS, ...) hand out plain
+# postgres:// or postgresql:// URLs, but this app's driver is psycopg3
+# (see requirements.txt) which SQLAlchemy only selects via the
+# "postgresql+psycopg://" dialect prefix — normalize it here so a
+# connection string pasted straight from a provider's dashboard just works.
+if DATABASE_URL.startswith("postgres://"):
+    DATABASE_URL = "postgresql+psycopg://" + DATABASE_URL[len("postgres://"):]
+elif DATABASE_URL.startswith("postgresql://"):
+    DATABASE_URL = "postgresql+psycopg://" + DATABASE_URL[len("postgresql://"):]
+
 engine = create_engine(
     DATABASE_URL,
     connect_args={"check_same_thread": False} if DATABASE_URL.startswith("sqlite") else {}

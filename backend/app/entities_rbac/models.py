@@ -1,5 +1,6 @@
 import uuid
-from sqlalchemy import Column, String, ForeignKey, UniqueConstraint, Boolean
+from datetime import datetime
+from sqlalchemy import Column, String, ForeignKey, UniqueConstraint, Boolean, DateTime
 from sqlalchemy.orm import relationship
 from app.database import Base
 from enum import Enum
@@ -8,6 +9,11 @@ class OnboardingStatus(str, Enum):
     PENDING = "PENDING"
     APPROVED = "APPROVED"
     SUSPENDED = "SUSPENDED"
+
+class UserStatus(str, Enum):
+    PENDING = "PENDING"    # self-registered, awaiting admin approval; cannot log in yet
+    ACTIVE = "ACTIVE"
+    REJECTED = "REJECTED"  # admin declined the registration request
 
 class Entity(Base):
     __tablename__ = "entities"
@@ -56,6 +62,12 @@ class User(Base):
     mfa_secret = Column(String(64), nullable=True)  # TOTP secret, set on enroll
     mfa_enabled = Column(Boolean, nullable=False, default=False)
     auth_provider = Column(String(20), nullable=False, default="PASSWORD")  # PASSWORD, SSO
+    status = Column(String(20), nullable=False, default=UserStatus.ACTIVE.value)
+    # What a self-registered (PENDING) user asked for — the admin can grant
+    # a different role/department at approval time, these are just the ask.
+    requested_role_id = Column(String(50), ForeignKey("roles.id"), nullable=True)
+    requested_department_id = Column(String(36), ForeignKey("departments.id"), nullable=True)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
 
     entity = relationship("Entity")
     roles = relationship("UserRole", back_populates="user")
