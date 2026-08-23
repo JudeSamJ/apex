@@ -126,6 +126,35 @@ def list_vendors(
 ):
     return db.query(Vendor).filter(Vendor.entity_id == current_user.active_entity_id).all()
 
+class VendorTaxInfoIn(BaseModel):
+    tax_id: str
+    tax_address: str
+
+@router.patch("/vendors/{vendor_id}/tax-info", response_model=VendorOut)
+def update_vendor_tax_info(
+    vendor_id: str,
+    body: VendorTaxInfoIn,
+    current_user: UserContext = Depends(get_current_user_context),
+    db: Session = Depends(get_db)
+):
+    """Record a vendor's TIN/address (typically collected via a W-9) so
+    they can be included on the 1099-NEC report."""
+    current_user.check_active_entity_approved()
+    if not current_user.is_admin and "BOOKKEEPER" not in current_user.roles:
+        raise HTTPException(status_code=403, detail="Only admins/bookkeepers can update vendor tax info")
+
+    vendor = db.query(Vendor).filter(
+        Vendor.id == vendor_id, Vendor.entity_id == current_user.active_entity_id
+    ).first()
+    if not vendor:
+        raise HTTPException(status_code=404, detail="Vendor not found")
+
+    vendor.tax_id = body.tax_id
+    vendor.tax_address = body.tax_address
+    db.commit()
+    db.refresh(vendor)
+    return vendor
+
 @router.post("", response_model=BillOut)
 def create_bill(
     bill_in: BillCreate,

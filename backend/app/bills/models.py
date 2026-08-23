@@ -12,6 +12,8 @@ class Vendor(Base):
     name = Column(String(255), nullable=False)
     default_gl_account_id = Column(String(36), nullable=True)  # Placeholder for Phase 3 sync
     screening_status = Column(String(20), nullable=False, default="CLEAR")  # CLEAR, HIT, ERROR
+    tax_id = Column(String(20), nullable=True)  # EIN/SSN for 1099-NEC reporting, collected via W-9
+    tax_address = Column(String(500), nullable=True)  # Mailing address for 1099-NEC reporting
 
     entity = relationship("Entity")
 

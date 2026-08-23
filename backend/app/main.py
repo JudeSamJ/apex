@@ -20,6 +20,8 @@ from app.screening.router import router as screening_router
 from app.disputes.router import router as disputes_router
 from app.reconciliation.router import router as reconciliation_router
 from app.notifications.router import router as notifications_router
+from app.tax_reporting.router import router as tax_reporting_router
+from app.ops.router import router as ops_router
 
 configure_logging()
 init_sentry()
@@ -63,3 +65,5 @@ app.include_router(screening_router)
 app.include_router(disputes_router)
 app.include_router(reconciliation_router)
 app.include_router(notifications_router)
+app.include_router(tax_reporting_router)
+app.include_router(ops_router)

@@ -45,6 +45,12 @@ New env vars: `SENTRY_DSN`, `SENTRY_ENVIRONMENT`, `SENTRY_TRACES_SAMPLE_RATE`, `
   - **Still needed for production:** a real SMTP/ESP account (`SMTP_HOST`/`SMTP_USERNAME`/`SMTP_PASSWORD`/`SMTP_FROM_EMAIL`), SMS for time-sensitive alerts, and a push/websocket channel so the frontend doesn't have to poll.
 - **CSV statement export** — `GET /api/transactions/export.csv`, same visibility rules as the existing transaction list (non-admin/bookkeeper users only see their own card).
   - **Still needed for production:** PDF statements, and export for bills/reimbursements/ledger history (today only card transactions are covered).
+- **1099-NEC vendor tax reporting** (`app/tax_reporting/`) — `GET /api/tax-reporting/1099-nec/{year}` aggregates bank-transfer bill payments per vendor for a calendar year and flags every vendor at or above the IRS $600 nonemployee-compensation threshold; `.../export.csv` produces a ready-to-file-shaped CSV (Vendor Name, TIN, Address, Box 1 amount). Added `tax_id`/`tax_address` to `Vendor` plus `PATCH /api/bills/vendors/{id}/tax-info` so a W-9's data can actually be recorded — the export shows `TIN_REQUIRED`/`ADDRESS_REQUIRED` placeholders until it is.
+  - **Still needed for production:** a real e-file/mail service (Track1099, Tax1099, or filing directly with the IRS FIRE system) — this report gives you the numbers, it doesn't file them; W-9 collection UX; and 1099-K awareness for the card-issuing side (currently out of scope here, Stripe handles it separately).
+- **Admin ops console** (`app/ops/`) — `GET /api/ops/summary` is a one-screen view of everything needing admin attention (pending approvals, open disputes, vendors with a sanctions hit, sync errors, open reconciliation discrepancies, unread notifications). `POST /api/ops/reconciliation-discrepancies/{id}/resolve` closes the loop the reconciliation engine opens: `RETRY` resets the underlying bill/reimbursement to `APPROVED` so it can be paid out again, `ACKNOWLEDGE` closes a false positive — both audit-logged.
+  - **Still needed for production:** a real admin UI (today this is API-only), and broader ops actions (e.g. force-canceling a stuck card, manually re-running a single sync item) beyond the reconciliation-discrepancy workflow.
+
+New env vars: none beyond what earlier passes already added.
 
 New env vars: `USE_REAL_EMAIL`, `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD`, `SMTP_FROM_EMAIL` (all optional, default to mock/logged email).
 

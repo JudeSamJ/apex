@@ -30,6 +30,7 @@ class DiscrepancyOut(BaseModel):
     local_status: str
     provider_status: str
     amount: Optional[float] = None
+    resolved: Optional[str] = None
     created_at: str
 
 
@@ -55,6 +56,7 @@ def _discrepancy_out(d: ReconciliationDiscrepancy) -> dict:
         "local_status": d.local_status,
         "provider_status": d.provider_status,
         "amount": float(d.amount) if d.amount is not None else None,
+        "resolved": d.resolved,
         "created_at": d.created_at.isoformat(),
     }
 

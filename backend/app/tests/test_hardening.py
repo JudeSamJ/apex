@@ -772,3 +772,171 @@ def test_transaction_csv_export(db_session):
     assert Decimal(data_row[7]) == Decimal("42.50")
     assert data_row[9] == "SETTLED"
 
+def test_1099_nec_report_thresholds_and_export(db_session):
+    db = db_session
+    import csv
+    import io
+    from app.bills.models import Bill, BillPayment, Vendor
+
+    role = db.query(Role).filter(Role.id == "ADMIN").first()
+    if not role:
+        db.add(Role(id="ADMIN", name="Admin"))
+        db.commit()
+
+    entity = Entity(id="nec-ent-1", name="1099 Entity", onboarding_status="APPROVED")
+    dept = Department(id="nec-dept-1", entity_id=entity.id, name="1099 Dept")
+    admin_user = User(
+        id="nec-admin-1",
+        name="1099 Admin",
+        email="nec-admin@apex.com",
+        entity_id=entity.id,
+        password_hash=get_password_hash("password123")
+    )
+    db.add_all([entity, dept, admin_user])
+    db.flush()
+    db.add(UserRole(user_id=admin_user.id, role_id="ADMIN", entity_id=entity.id))
+
+    over_threshold_vendor = Vendor(id="nec-vend-over", entity_id=entity.id, name="Over Threshold Vendor")
+    under_threshold_vendor = Vendor(id="nec-vend-under", entity_id=entity.id, name="Under Threshold Vendor")
+    card_paid_vendor = Vendor(id="nec-vend-card", entity_id=entity.id, name="Card Paid Vendor")
+    db.add_all([over_threshold_vendor, under_threshold_vendor, card_paid_vendor])
+
+    def make_paid_bill(bill_id, vendor_id, amount, payment_method="BANK_TRANSFER"):
+        bill = Bill(
+            id=bill_id,
+            entity_id=entity.id,
+            department_id=dept.id,
+            vendor_id=vendor_id,
+            status="PAID",
+            due_date=datetime(2026, 6, 1),
+            total_amount=Decimal(amount),
+            payment_method=payment_method
+        )
+        payment = BillPayment(
+            id=f"{bill_id}-pmt",
+            entity_id=entity.id,
+            bill_id=bill_id,
+            transfer_ref=f"ref_{bill_id}",
+            paid_at=datetime(2026, 6, 15)
+        )
+        return bill, payment
+
+    b1, p1 = make_paid_bill("nec-bill-1", over_threshold_vendor.id, "400.00")
+    b2, p2 = make_paid_bill("nec-bill-2", over_threshold_vendor.id, "300.00")
+    b3, p3 = make_paid_bill("nec-bill-3", under_threshold_vendor.id, "200.00")
+    b4, p4 = make_paid_bill("nec-bill-4", card_paid_vendor.id, "800.00", payment_method="CARD")
+    db.add_all([b1, p1, b2, p2, b3, p3, b4, p4])
+    db.commit()
+
+    response = client.post("/api/auth/token", data={"username": "nec-admin@apex.com", "password": "password123"})
+    headers = {"Authorization": f"Bearer {response.json()['access_token']}", "X-Entity-Id": entity.id}
+
+    report = client.get("/api/tax-reporting/1099-nec/2026", headers=headers)
+    assert report.status_code == 200
+    rows = report.json()
+    assert len(rows) == 1
+    assert rows[0]["vendor_id"] == over_threshold_vendor.id
+    assert rows[0]["total_paid"] == 700.0
+    assert rows[0]["reportable"] is True
+    assert rows[0]["tax_id"] is None
+
+    # A different year with no payments returns nothing.
+    empty_report = client.get("/api/tax-reporting/1099-nec/2025", headers=headers)
+    assert empty_report.json() == []
+
+    tax_info = client.patch(
+        f"/api/bills/vendors/{over_threshold_vendor.id}/tax-info",
+        headers=headers,
+        json={"tax_id": "12-3456789", "tax_address": "123 Vendor St, Testville, CA"}
+    )
+    assert tax_info.status_code == 200
+
+    export = client.get("/api/tax-reporting/1099-nec/2026/export.csv", headers=headers)
+    assert export.status_code == 200
+    export_rows = list(csv.reader(io.StringIO(export.text)))
+    data_row = next(r for r in export_rows[1:] if r[0] == "Over Threshold Vendor")
+    assert data_row[1] == "12-3456789"
+    assert Decimal(data_row[4]) == Decimal("700.00")
+
+def test_ops_summary_and_discrepancy_resolution(db_session):
+    db = db_session
+    from app.bills.models import Bill, BillPayment, Vendor
+    from app.reconciliation.models import ReconciliationDiscrepancy
+
+    role = db.query(Role).filter(Role.id == "ADMIN").first()
+    if not role:
+        db.add(Role(id="ADMIN", name="Admin"))
+        db.commit()
+
+    entity = Entity(id="ops-ent-1", name="Ops Entity", onboarding_status="APPROVED")
+    dept = Department(id="ops-dept-1", entity_id=entity.id, name="Ops Dept")
+    admin_user = User(
+        id="ops-admin-1",
+        name="Ops Admin",
+        email="ops-admin@apex.com",
+        entity_id=entity.id,
+        password_hash=get_password_hash("password123")
+    )
+    db.add_all([entity, dept, admin_user])
+    db.flush()
+    db.add(UserRole(user_id=admin_user.id, role_id="ADMIN", entity_id=entity.id))
+
+    vendor = Vendor(id="ops-vend-1", entity_id=entity.id, name="Ops Vendor")
+    drifted_bill = Bill(
+        id="ops-bill-1",
+        entity_id=entity.id,
+        department_id=dept.id,
+        vendor_id=vendor.id,
+        status="PAID",
+        due_date=datetime(2026, 12, 31),
+        total_amount=Decimal("500.00"),
+        payment_method="BANK_TRANSFER"
+    )
+    drifted_payment = BillPayment(
+        id="ops-pmt-1",
+        entity_id=entity.id,
+        bill_id=drifted_bill.id,
+        transfer_ref="ref_ach_FAIL_TEST_ops"
+    )
+    db.add_all([vendor, drifted_bill, drifted_payment])
+    db.commit()
+
+    response = client.post("/api/auth/token", data={"username": "ops-admin@apex.com", "password": "password123"})
+    headers = {"Authorization": f"Bearer {response.json()['access_token']}", "X-Entity-Id": entity.id}
+
+    run_response = client.post("/api/reconciliation/run", headers=headers)
+    assert run_response.status_code == 200
+    assert run_response.json()["discrepancy_count"] == 1
+
+    summary = client.get("/api/ops/summary", headers=headers)
+    assert summary.status_code == 200
+    assert summary.json()["open_reconciliation_discrepancies"] == 1
+
+    discrepancy = db.query(ReconciliationDiscrepancy).filter(
+        ReconciliationDiscrepancy.subject_id == "ops-pmt-1"
+    ).first()
+    assert discrepancy is not None
+    assert discrepancy.resolved is None
+
+    resolve = client.post(
+        f"/api/ops/reconciliation-discrepancies/{discrepancy.id}/resolve",
+        headers=headers,
+        json={"action": "RETRY"}
+    )
+    assert resolve.status_code == 200
+    assert resolve.json()["resolved"] == "RETRIED"
+
+    db.refresh(drifted_bill)
+    assert drifted_bill.status == "APPROVED"
+
+    summary_after = client.get("/api/ops/summary", headers=headers)
+    assert summary_after.json()["open_reconciliation_discrepancies"] == 0
+
+    # Already-resolved discrepancies can't be resolved again.
+    re_resolve = client.post(
+        f"/api/ops/reconciliation-discrepancies/{discrepancy.id}/resolve",
+        headers=headers,
+        json={"action": "ACKNOWLEDGE"}
+    )
+    assert re_resolve.status_code == 400
+

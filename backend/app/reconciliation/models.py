@@ -38,5 +38,8 @@ class ReconciliationDiscrepancy(Base):
     provider_status = Column(String(30), nullable=False)
     amount = Column(Numeric(18, 4), nullable=True)
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    resolved = Column(String(20), nullable=True)  # None (open), RETRIED, ACKNOWLEDGED
+    resolved_at = Column(DateTime, nullable=True)
+    resolved_by = Column(String(36), ForeignKey("users.id"), nullable=True)
 
     run = relationship("ReconciliationRun")
