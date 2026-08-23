@@ -41,11 +41,30 @@ def init_db():
 
     Safe to call on every app startup: a DB already at head is a no-op.
     """
+    import logging
     from alembic.config import Config
     from alembic import command
+    from sqlalchemy import inspect
 
     backend_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     alembic_cfg = Config(os.path.join(backend_dir, "alembic.ini"))
+
+    # A database can already hold this app's full table set without any
+    # Alembic bookkeeping — e.g. one created by the old create_all() before
+    # this migration setup existed, or (in this app's test suite) the dev
+    # sqlite file that a TestClient's startup event touches independently
+    # of each test's own isolated engine. In that case "upgrade" would try
+    # to CREATE TABLE things that already exist and fail; what it actually
+    # needs is to be told it's already at the baseline.
+    inspector = inspect(engine)
+    existing_tables = set(inspector.get_table_names())
+    if "alembic_version" not in existing_tables and "entities" in existing_tables:
+        logging.getLogger(__name__).warning(
+            "Database has tables but no Alembic version — stamping as already "
+            "at the baseline migration instead of trying to recreate them."
+        )
+        command.stamp(alembic_cfg, "head")
+
     command.upgrade(alembic_cfg, "head")
 
 def get_db():

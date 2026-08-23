@@ -4,3 +4,14 @@ backend/uploads/
 # Python bytecode caches.
 __pycache__/
 *.pyc
+
+# Local SQLite databases (dev db + its ATTACHed ledger file, and every test
+# suite's isolated db) — generated at runtime, never source. These used to
+# be committed, which meant a fresh checkout carried stale, un-migrated
+# schema/data that broke a real app boot (Alembic trying to CREATE TABLE
+# things a leftover committed db already had).
+*.db
+
+# Node/frontend build output and dependencies.
+node_modules/
+dist/
