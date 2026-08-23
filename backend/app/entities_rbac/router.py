@@ -139,6 +139,12 @@ def register(user_in: UserRegister, db: Session = Depends(get_db)):
 
 @router.post("/token", response_model=LoginResponse)
 def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
+    from app.rate_limit import check_rate_limit
+    # Keyed by the submitted username so a stolen/guessed email can't be
+    # brute-forced against unlimited passwords — checked before the DB
+    # lookup so it applies the same whether or not the account exists.
+    check_rate_limit(user_id=form_data.username, endpoint="login", limit=10, window_seconds=300)
+
     user = db.query(User).filter(User.email == form_data.username).first()
     if not user or not verify_password(form_data.password, user.password_hash):
         raise HTTPException(
