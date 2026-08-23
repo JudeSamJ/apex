@@ -39,6 +39,10 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    # Custom response headers (X-Total-Count for paginated list endpoints)
+    # aren't visible to browser JS via fetch()'s Response.headers unless
+    # explicitly exposed — they're not in CORS's default safelist.
+    expose_headers=["X-Total-Count"],
 )
 
 @app.on_event("startup")

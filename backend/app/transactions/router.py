@@ -1,6 +1,6 @@
 import csv
 import io
-from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File
+from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Query, Response
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 from sqlalchemy import func
@@ -43,6 +43,9 @@ class TransactionOut(BaseModel):
 
 @router.get("", response_model=List[TransactionOut])
 def list_transactions(
+    response: Response,
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
     current_user: UserContext = Depends(get_current_user_context),
     db: Session = Depends(get_db)
 ):
@@ -53,7 +56,11 @@ def list_transactions(
     if not current_user.is_admin and "BOOKKEEPER" not in current_user.roles:
         query = query.filter(Card.owner_id == current_user.user_id)
 
-    txs = query.order_by(Transaction.created_at.desc()).all()
+    # Unbounded before this — every card swipe adds a row here, and the
+    # frontend polls this endpoint every 5 seconds, so an account with a
+    # real transaction history would make every poll progressively slower.
+    response.headers["X-Total-Count"] = str(query.count())
+    txs = query.order_by(Transaction.created_at.desc()).limit(limit).offset(offset).all()
     out = []
     for tx in txs:
         out.append({

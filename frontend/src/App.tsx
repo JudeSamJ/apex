@@ -351,6 +351,8 @@ export default function App() {
   const [cards, setCards] = useState<Card[]>([]);
   const [cardRequests, setCardRequests] = useState<CardRequest[]>([]);
   const [transactions, setTransactions] = useState<Transaction[]>([]);
+  const [txTotalCount, setTxTotalCount] = useState<number>(0);
+  const [txPageSize, setTxPageSize] = useState<number>(50);
   
   // Phase 2 State Data
   const [approvalSteps, setApprovalSteps] = useState<ApprovalStep[]>([]);
@@ -436,6 +438,8 @@ export default function App() {
 
   // Hardening Phase 4 States
   const [auditLogs, setAuditLogs] = useState<any[]>([]);
+  const [auditLogTotalCount, setAuditLogTotalCount] = useState<number>(0);
+  const [auditLogPageSize, setAuditLogPageSize] = useState<number>(100);
   const [backgroundJobs, setBackgroundJobs] = useState<any[]>([]);
 
   // Form states - Cards
@@ -549,7 +553,11 @@ export default function App() {
       }, 5000);
     }
     return () => clearInterval(interval);
-  }, [token, user, activeEntityId]);
+    // txPageSize/auditLogPageSize must be deps too — otherwise this interval's
+    // closure keeps calling fetchTransactions/fetchAuditLogs with whatever
+    // page size was current when the interval was created, silently
+    // reverting "Load More" a few seconds after the user clicks it.
+  }, [token, user, activeEntityId, txPageSize, auditLogPageSize]);
 
   useEffect(() => {
     if (token) {
@@ -599,6 +607,14 @@ export default function App() {
   useEffect(() => {
     if (user) fetchNecReport();
   }, [necYear]);
+
+  useEffect(() => {
+    if (user) fetchTransactions();
+  }, [txPageSize]);
+
+  useEffect(() => {
+    if (user) fetchAuditLogs();
+  }, [auditLogPageSize]);
 
   const fetchUser = async () => {
     try {
@@ -1008,9 +1024,11 @@ export default function App() {
 
   const fetchTransactions = async () => {
     try {
-      const res = await fetch(`${API_BASE}/api/transactions`, { headers: getHeaders() });
+      const res = await fetch(`${API_BASE}/api/transactions?limit=${txPageSize}`, { headers: getHeaders() });
       const data = await res.json();
       setTransactions(data);
+      const total = res.headers.get('X-Total-Count');
+      if (total !== null) setTxTotalCount(Number(total));
     } catch (e) { console.error(e); }
   };
 
@@ -1123,10 +1141,12 @@ export default function App() {
 
   const fetchAuditLogs = async () => {
     try {
-      const res = await fetch(`${API_BASE}/api/reporting/audit-logs`, { headers: getHeaders() });
+      const res = await fetch(`${API_BASE}/api/reporting/audit-logs?limit=${auditLogPageSize}`, { headers: getHeaders() });
       if (res.ok) {
         const data = await res.json();
         setAuditLogs(data);
+        const total = res.headers.get('X-Total-Count');
+        if (total !== null) setAuditLogTotalCount(Number(total));
       }
     } catch (e) { console.error(e); }
   };
@@ -3686,6 +3706,20 @@ export default function App() {
                   </tbody>
                 </table>
               </div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '1rem' }}>
+                <p style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
+                  Showing {auditLogs.length} of {auditLogTotalCount} entries
+                </p>
+                {auditLogs.length < auditLogTotalCount && (
+                  <button
+                    className="btn btn-secondary"
+                    style={{ fontSize: '0.85rem' }}
+                    onClick={() => { setAuditLogPageSize(p => p + 100); }}
+                  >
+                    Load More
+                  </button>
+                )}
+              </div>
             </div>
 
           </div>
@@ -3936,6 +3970,20 @@ export default function App() {
                     ))}
                   </tbody>
                 </table>
+              </div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '1rem' }}>
+                <p style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
+                  Showing {transactions.length} of {txTotalCount} transactions
+                </p>
+                {transactions.length < txTotalCount && (
+                  <button
+                    className="btn btn-secondary"
+                    style={{ fontSize: '0.85rem' }}
+                    onClick={() => { setTxPageSize(p => p + 50); }}
+                  >
+                    Load More
+                  </button>
+                )}
               </div>
             </div>
           </div>

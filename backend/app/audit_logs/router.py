@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from typing import List, Optional
@@ -32,6 +32,9 @@ def log_audit_action(db: Session, entity_id: str, user_id: Optional[str], action
 
 @router.get("", response_model=List[AuditLogOut])
 def list_audit_logs(
+    response: Response,
+    limit: int = Query(100, ge=1, le=500),
+    offset: int = Query(0, ge=0),
     current_user: UserContext = Depends(get_current_user_context),
     db: Session = Depends(get_db)
 ):
@@ -39,9 +42,11 @@ def list_audit_logs(
     if not current_user.is_admin and "BOOKKEEPER" not in current_user.roles:
         raise HTTPException(status_code=403, detail="Audit logs are restricted to Admins and Bookkeepers")
 
-    logs = db.query(AuditLog).filter(
-        AuditLog.entity_id == current_user.active_entity_id
-    ).order_by(AuditLog.created_at.desc()).limit(100).all()
+    query = db.query(AuditLog).filter(AuditLog.entity_id == current_user.active_entity_id)
+    # Previously a hardcoded .limit(100) with no offset — silently capped
+    # with no way to see older entries or even know there was more.
+    response.headers["X-Total-Count"] = str(query.count())
+    logs = query.order_by(AuditLog.created_at.desc()).limit(limit).offset(offset).all()
 
     out = []
     for l in logs:
