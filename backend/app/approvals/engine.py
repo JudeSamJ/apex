@@ -153,12 +153,12 @@ class ApprovalEngine:
 def trigger_approval_callback(db: Session, approval: Approval):
     if approval.approvable_type == "CARD_REQUEST":
         from app.cards.models import CardRequest, Card
-        from app.cards.partner_client import MockIssuingPartnerClient
-        
+        from app.cards.partner_client import get_issuing_client
+
         req = db.query(CardRequest).filter(CardRequest.id == approval.approvable_id).first()
         if req and req.status == "PENDING_APPROVAL":
             req.status = "APPROVED"
-            partner_client = MockIssuingPartnerClient()
+            partner_client = get_issuing_client()
             res = partner_client.create_card(req.entity_id, req.requester_id, req.type, float(req.limit_amount))
             card = Card(
                 entity_id=req.entity_id,

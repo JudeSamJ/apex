@@ -4,12 +4,12 @@ import pytest
 from decimal import Decimal
 from sqlalchemy.orm import Session
 
-# Set environment variables to use real integrations for these tests
-os.environ["USE_REAL_ISSUING"] = "true"
-os.environ["USE_REAL_PAYMENT_RAIL"] = "true"
-os.environ["USE_REAL_PLAID"] = "true"
-os.environ["USE_REAL_DIDIT"] = "true"
-os.environ["USE_REAL_QBO"] = "true"
+# These tests instantiate the real provider clients (StripeIssuingClient, etc.)
+# directly and are skipped unless the matching secret env var is present, so no
+# USE_REAL_* flags need to be set here. Setting them at module scope previously
+# leaked into every other test module in the same pytest session (module-level
+# os.environ writes happen at import/collection time, before any test runs, and
+# are never undone), silently forcing real-provider factories on elsewhere.
 
 
 class TestStripeIssuingIntegration:

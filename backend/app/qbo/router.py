@@ -95,6 +95,35 @@ def exchange_token(
     return token_data
 
 
+TOKEN_REFRESH_MARGIN = timedelta(minutes=5)
+
+
+def get_valid_qbo_connection(db: Session, entity_id: str):
+    """Fetch the entity's QBO connection, refreshing its access token first if it's
+    expired or about to expire. Callers should always go through this instead of
+    querying ERPConnection directly so a stale token never reaches the QBO API."""
+    from app.accounting.models import ERPConnection
+
+    connection = db.query(ERPConnection).filter(
+        ERPConnection.entity_id == entity_id,
+        ERPConnection.provider == "QBO"
+    ).first()
+
+    if not connection:
+        raise HTTPException(status_code=404, detail="QBO connection not found")
+
+    if connection.expires_at and connection.expires_at <= datetime.utcnow() + TOKEN_REFRESH_MARGIN:
+        qbo_client = get_qbo_client()
+        refreshed = qbo_client.refresh_access_token(connection.refresh_token)
+        connection.access_token = refreshed["access_token"]
+        connection.refresh_token = refreshed.get("refresh_token", connection.refresh_token)
+        connection.expires_at = datetime.utcnow() + timedelta(seconds=refreshed["expires_in"])
+        db.commit()
+        db.refresh(connection)
+
+    return connection
+
+
 @router.post("/sync-accounts")
 def sync_chart_of_accounts(
     current_user: UserContext = Depends(get_current_user_context),
@@ -102,17 +131,9 @@ def sync_chart_of_accounts(
 ):
     """Pull chart of accounts from QBO and sync to local gl_accounts table."""
     current_user.check_active_entity_approved()
-    
-    # Get QBO connection for entity
-    from app.accounting.models import ERPConnection
-    connection = db.query(ERPConnection).filter(
-        ERPConnection.entity_id == current_user.active_entity_id,
-        ERPConnection.provider == "QBO"
-    ).first()
-    
-    if not connection:
-        raise HTTPException(status_code=404, detail="QBO connection not found")
-    
+
+    connection = get_valid_qbo_connection(db, current_user.active_entity_id)
+
     qbo_client = get_qbo_client()
     accounts = qbo_client.get_chart_of_accounts(connection.access_token, connection.realm_id)
     

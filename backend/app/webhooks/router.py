@@ -17,22 +17,56 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/webhooks", tags=["webhooks"])
 
 STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET", "")
+DWOLLA_WEBHOOK_SECRET = os.getenv("DWOLLA_WEBHOOK_SECRET", "")
+DIDIT_WEBHOOK_SECRET = os.getenv("DIDIT_WEBHOOK_SECRET", "")
+
+
+def _verify_hmac_signature(payload: bytes, signature: str, secret: str) -> bool:
+    """Constant-time HMAC-SHA256 signature check shared by the Dwolla/Didit handlers."""
+    if not signature:
+        return False
+    expected = hmac.new(secret.encode("utf-8"), payload, hashlib.sha256).hexdigest()
+    return hmac.compare_digest(expected, signature)
+
+
+def _require_valid_signature(
+    provider: str, payload: bytes, signature: str, secret: str
+) -> None:
+    """Reject the webhook unless it carries a valid signature for the configured secret.
+
+    When no secret is configured (sandbox/demo mode, no dashboard access to set one
+    up yet) verification is skipped but loudly logged, matching the existing Stripe
+    handler's behavior — this must not be the default in production.
+    """
+    if not secret:
+        logger.warning(
+            f"{provider}_WEBHOOK_SECRET not set; skipping {provider} webhook signature "
+            "verification (sandbox mode only — set the secret before going live)"
+        )
+        return
+    if not _verify_hmac_signature(payload, signature, secret):
+        logger.error(f"Invalid {provider} webhook signature")
+        raise HTTPException(status_code=400, detail="Invalid signature")
 
 
 @router.post("/dwolla")
 async def dwolla_webhook(
     request: Request,
+    x_request_signature_sha256: str = Header(None, alias="X-Request-Signature-SHA256"),
     db: Session = Depends(get_db)
 ):
     """Handle Dwolla webhook events for transfer status updates."""
-    
+
     payload = await request.body()
-    
-    # Dwolla webhooks contain a signature in the X-Request-Signature-SHA256 header
-    # For sandbox demo, we'll skip signature verification
+
+    # Dwolla signs webhooks with HMAC-SHA256 of the raw body in
+    # X-Request-Signature-SHA256, keyed by the app secret configured in the
+    # Dwolla dashboard (DWOLLA_WEBHOOK_SECRET here).
+    _require_valid_signature("Dwolla", payload, x_request_signature_sha256, DWOLLA_WEBHOOK_SECRET)
+
     import json
     event = json.loads(payload)
-    
+
     event_topic = event.get("topic")
     event_id = event.get("id")
     event_data = event.get("_links", {}).get("resource", {}).get("href", "")
@@ -150,13 +184,17 @@ async def handle_dwolla_transfer_cancelled(db: Session, event_id: str, transfer_
 @router.post("/didit")
 async def didit_webhook(
     request: Request,
+    x_didit_signature: str = Header(None, alias="X-Didit-Signature"),
     db: Session = Depends(get_db)
 ):
     """Handle Didit webhook events for KYC/KYB verification status updates."""
-    
+
     payload = await request.body()
-    
-    # For sandbox demo, skip signature verification
+
+    # Didit signs webhooks with HMAC-SHA256 of the raw body in X-Didit-Signature,
+    # keyed by the webhook secret configured in the Didit dashboard.
+    _require_valid_signature("Didit", payload, x_didit_signature, DIDIT_WEBHOOK_SECRET)
+
     import json
     event = json.loads(payload)
     

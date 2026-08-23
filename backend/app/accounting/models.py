@@ -1,6 +1,6 @@
 import uuid
 from datetime import datetime
-from sqlalchemy import Column, String, ForeignKey, Boolean, DateTime, JSON
+from sqlalchemy import Column, String, ForeignKey, Boolean, DateTime, JSON, Integer
 from sqlalchemy.orm import relationship
 from app.database import Base
 
@@ -42,6 +42,8 @@ class SyncQueue(Base):
     status = Column(String(30), nullable=False, default="SYNC_READY")  # SYNC_READY, SYNCING, SYNCED, ERROR
     error_message = Column(String(500), nullable=True)
     synced_at = Column(DateTime, nullable=True)
+    retry_count = Column(Integer, nullable=False, default=0)
+    next_retry_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
 
     entity = relationship("Entity")

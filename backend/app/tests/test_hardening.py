@@ -187,3 +187,131 @@ def test_payment_rail_webhook_bill_flow(db_session):
     db.refresh(bill)
     assert bill.status == "APPROVED"
 
+def test_dwolla_webhook_rejects_invalid_signature(monkeypatch):
+    import json
+    import hmac
+    import hashlib
+    import app.webhooks.router as webhooks_router
+
+    monkeypatch.setattr(webhooks_router, "DWOLLA_WEBHOOK_SECRET", "test_dwolla_secret")
+
+    payload = json.dumps({
+        "topic": "transfer_cancelled",
+        "id": "evt-sig-test",
+        "_links": {"resource": {"href": "https://api-sandbox.dwolla.com/transfers/unknown"}}
+    }).encode()
+
+    # Wrong/missing signature is rejected once a secret is configured
+    response = client.post(
+        "/api/webhooks/dwolla",
+        content=payload,
+        headers={"X-Request-Signature-SHA256": "not-the-real-signature"}
+    )
+    assert response.status_code == 400
+
+    # Correctly signed payload is accepted
+    valid_signature = hmac.new(b"test_dwolla_secret", payload, hashlib.sha256).hexdigest()
+    response = client.post(
+        "/api/webhooks/dwolla",
+        content=payload,
+        headers={"X-Request-Signature-SHA256": valid_signature}
+    )
+    assert response.status_code == 200
+
+def test_didit_webhook_rejects_invalid_signature(monkeypatch):
+    import json
+    import hmac
+    import hashlib
+    import app.webhooks.router as webhooks_router
+
+    monkeypatch.setattr(webhooks_router, "DIDIT_WEBHOOK_SECRET", "test_didit_secret")
+
+    payload = json.dumps({
+        "verification_id": "verif-sig-test",
+        "status": "pending",
+        "external_id": "unknown-entity"
+    }).encode()
+
+    response = client.post(
+        "/api/webhooks/didit",
+        content=payload,
+        headers={"X-Didit-Signature": "not-the-real-signature"}
+    )
+    assert response.status_code == 400
+
+    valid_signature = hmac.new(b"test_didit_secret", payload, hashlib.sha256).hexdigest()
+    response = client.post(
+        "/api/webhooks/didit",
+        content=payload,
+        headers={"X-Didit-Signature": valid_signature}
+    )
+    assert response.status_code == 200
+
+def test_bill_pay_idempotency_key_prevents_double_payment(db_session):
+    db = db_session
+    from app.bills.models import Bill, BillPayment, Vendor
+
+    role = db.query(Role).filter(Role.id == "ADMIN").first()
+    if not role:
+        db.add(Role(id="ADMIN", name="Admin"))
+        db.commit()
+
+    entity = Entity(id="idem-ent-1", name="Idempotency Entity", onboarding_status="APPROVED")
+    dept = Department(id="idem-dept-1", entity_id=entity.id, name="Idempotency Dept")
+    admin_user = User(
+        id="idem-admin-1",
+        name="Idem Admin",
+        email="idem-admin@apex.com",
+        entity_id=entity.id,
+        password_hash=get_password_hash("password123")
+    )
+    db.add_all([entity, dept, admin_user])
+    db.flush()
+    db.add(UserRole(user_id=admin_user.id, role_id="ADMIN", entity_id=entity.id))
+
+    vendor = Vendor(id="idem-vend-1", entity_id=entity.id, name="Idempotency Vendor")
+    bill = Bill(
+        id="idem-bill-1",
+        entity_id=entity.id,
+        department_id=dept.id,
+        vendor_id=vendor.id,
+        status="APPROVED",
+        due_date=datetime(2026, 12, 31),
+        total_amount=Decimal("500.00"),
+        payment_method="BANK_TRANSFER"
+    )
+    db.add_all([vendor, bill])
+    db.commit()
+
+    response = client.post(
+        "/api/auth/token",
+        data={"username": "idem-admin@apex.com", "password": "password123"}
+    )
+    assert response.status_code == 200
+    headers = {
+        "Authorization": f"Bearer {response.json()['access_token']}",
+        "X-Entity-Id": entity.id,
+        "Idempotency-Key": "pay-idem-bill-1-attempt"
+    }
+
+    first = client.post(f"/api/bills/{bill.id}/pay", headers=headers)
+    assert first.status_code == 200
+    first_payment_id = first.json()["payment_id"]
+
+    # A retry with the same Idempotency-Key must replay the original response,
+    # not initiate a second transfer, even though the bill is no longer APPROVED.
+    second = client.post(f"/api/bills/{bill.id}/pay", headers=headers)
+    assert second.status_code == 200
+    assert second.json()["payment_id"] == first_payment_id
+
+    payments = db.query(BillPayment).filter(BillPayment.bill_id == bill.id).all()
+    assert len(payments) == 1
+
+    # A different Idempotency-Key against an already-PAID bill correctly 404s
+    # instead of being treated as a replay.
+    third = client.post(
+        f"/api/bills/{bill.id}/pay",
+        headers={**headers, "Idempotency-Key": "pay-idem-bill-1-different-attempt"}
+    )
+    assert third.status_code == 404
+

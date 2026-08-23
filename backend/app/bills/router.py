@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Header, status
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from typing import List, Optional
@@ -14,6 +14,7 @@ from app.approvals.engine import ApprovalEngine
 from app.ledger.client import LedgerClient
 from app.cards.models import Card
 from app.bills.payment_rail import get_payment_rail_client
+from app.idempotency.service import begin_idempotent, complete_idempotent, IdempotencyConflict, IdempotentReplay
 
 router = APIRouter(prefix="/api/bills", tags=["bills"])
 payment_rail = get_payment_rail_client()
@@ -243,11 +244,19 @@ def submit_bill(
 @router.post("/{bill_id}/pay")
 def pay_bill(
     bill_id: str,
+    idempotency_key: Optional[str] = Header(None, alias="Idempotency-Key"),
     current_user: UserContext = Depends(get_current_user_context),
     db: Session = Depends(get_db)
 ):
     current_user.check_active_entity_approved()
-    
+
+    try:
+        idem_record = begin_idempotent(db, idempotency_key, "bills.pay", current_user.active_entity_id)
+    except IdempotentReplay as replay:
+        return replay.response_body
+    except IdempotencyConflict as conflict:
+        raise HTTPException(status_code=409, detail=str(conflict))
+
     # Fetch bill
     bill = db.query(Bill).filter(
         Bill.id == bill_id,
@@ -334,8 +343,11 @@ def pay_bill(
     if gl_acc_id:
         from app.accounting.router import push_to_sync_queue
         push_to_sync_queue(db, bill.entity_id, "BILL", bill.id, gl_acc_id)
+
+    result = {"message": "Bill paid successfully", "payment_id": payment_id}
+    complete_idempotent(idem_record, 200, result)
     db.commit()
-    return {"message": "Bill paid successfully", "payment_id": payment_id}
+    return result
 
 @router.post("/{bill_id}/void")
 def void_bill(

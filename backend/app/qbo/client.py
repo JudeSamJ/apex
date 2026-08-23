@@ -76,7 +76,49 @@ class QuickBooksOnlineClient:
         except Exception as e:
             self.logger.error(f"Failed to exchange OAuth code: {e}")
             raise Exception(f"Failed to exchange OAuth code: {str(e)}")
-    
+
+    def refresh_access_token(self, refresh_token: str) -> Dict[str, Any]:
+        """Exchange a refresh token for a new access token.
+
+        QBO access tokens expire after 1 hour; refresh tokens are valid for 100
+        days and rotate on every use, so the new refresh_token must be persisted
+        too or the connection will die once the old one is discarded.
+        """
+        try:
+            data = {
+                "grant_type": "refresh_token",
+                "refresh_token": refresh_token
+            }
+
+            auth = (self.client_id, self.client_secret)
+            headers = {
+                "Accept": "application/json",
+                "Content-Type": "application/x-www-form-urlencoded"
+            }
+
+            response = httpx.post(
+                self.oauth_url,
+                data=data,
+                auth=auth,
+                headers=headers,
+                timeout=30.0
+            )
+            response.raise_for_status()
+
+            token_data = response.json()
+
+            self.logger.info("Refreshed QBO access token")
+
+            return {
+                "access_token": token_data.get("access_token"),
+                "refresh_token": token_data.get("refresh_token", refresh_token),
+                "expires_in": token_data.get("expires_in", 3600)
+            }
+
+        except Exception as e:
+            self.logger.error(f"Failed to refresh QBO access token: {e}")
+            raise Exception(f"Failed to refresh QBO access token: {str(e)}")
+
     def get_chart_of_accounts(self, access_token: str, realm_id: str) -> List[Dict[str, Any]]:
         """Retrieve chart of accounts from QBO sandbox company."""
         try:
@@ -193,6 +235,14 @@ class MockQBOClient:
             "expires_in": 3600
         }
     
+    def refresh_access_token(self, refresh_token: str) -> Dict[str, Any]:
+        """Return fake refreshed token data."""
+        return {
+            "access_token": "mock_access_token_refreshed",
+            "refresh_token": "mock_refresh_token",
+            "expires_in": 3600
+        }
+
     def get_chart_of_accounts(self, access_token: str, realm_id: str) -> List[Dict[str, Any]]:
         """Return fake chart of accounts."""
         return [

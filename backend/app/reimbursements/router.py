@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Header, status
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from typing import List, Optional
@@ -12,6 +12,7 @@ from app.reimbursements.models import Reimbursement, ReimbursementLineItem, Mile
 from app.bills.payment_rail import MockPaymentRailClient
 from app.bills.payment_rail import get_payment_rail_client
 from app.approvals.engine import ApprovalEngine
+from app.idempotency.service import begin_idempotent, complete_idempotent, IdempotencyConflict, IdempotentReplay
 
 router = APIRouter(prefix="/api/reimbursements", tags=["reimbursements"])
 payment_rail = get_payment_rail_client()
@@ -243,12 +244,20 @@ def list_reimbursements(
 @router.post("/{id}/payout")
 def payout_reimbursement(
     id: str,
+    idempotency_key: Optional[str] = Header(None, alias="Idempotency-Key"),
     current_user: UserContext = Depends(get_current_user_context),
     db: Session = Depends(get_db)
 ):
     current_user.check_active_entity_approved()
     if not current_user.is_admin:
         raise HTTPException(status_code=403, detail="Only admins can payout approved reimbursements")
+
+    try:
+        idem_record = begin_idempotent(db, idempotency_key, "reimbursements.payout", current_user.active_entity_id)
+    except IdempotentReplay as replay:
+        return replay.response_body
+    except IdempotencyConflict as conflict:
+        raise HTTPException(status_code=409, detail=str(conflict))
 
     reimb = db.query(Reimbursement).filter(
         Reimbursement.id == id,
@@ -274,10 +283,13 @@ def payout_reimbursement(
     if gl_acc_id:
         from app.accounting.router import push_to_sync_queue
         push_to_sync_queue(db, reimb.entity_id, "REIMBURSEMENT", reimb.id, gl_acc_id)
-    db.commit()
 
-    return {
+    result = {
         "message": "Reimbursement payout initiated",
         "transfer_ref": transfer_ref,
         "status": reimb.status
     }
+    complete_idempotent(idem_record, 200, result)
+    db.commit()
+
+    return result

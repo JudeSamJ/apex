@@ -38,6 +38,7 @@ def init_db():
     from app.reporting.models import Budget
     from app.audit_logs.models import AuditLog
     from app.jobs.models import BackgroundJob
+    from app.idempotency.models import IdempotencyKey
     
     # Create tables
     Base.metadata.create_all(bind=engine)

@@ -7,6 +7,16 @@
 
 This report tracks the integration status of all external providers. The application currently runs in **sandbox/demo mode** using real provider sandbox environments. This provides realistic API round-trips and data for client demos but is **not suitable for production use** without completing the business/legal steps outlined in `GOING_LIVE.md`.
 
+### Recent hardening (this pass)
+
+Pure-code gaps that don't require a vendor account were closed:
+
+- **Webhook signature verification** for Dwolla (`X-Request-Signature-SHA256`) and Didit (`X-Didit-Signature`), matching the pattern already used for Stripe. Verification is skipped with a loud warning log when the corresponding secret env var isn't set (sandbox default) — set `DWOLLA_WEBHOOK_SECRET`/`DIDIT_WEBHOOK_SECRET` before going live.
+- **Idempotency-Key support** on `POST /api/bills/{id}/pay` and `POST /api/reimbursements/{id}/payout` — a client-supplied `Idempotency-Key` header now guards against double-submitting a payment on retry/double-click; a concurrent duplicate gets `409`, a replayed one gets the original response back instead of a second transfer.
+- **Fixed a bug where card issuance always used the mock issuer** regardless of `USE_REAL_ISSUING` — `approvals/engine.py` was hardcoded to `MockIssuingPartnerClient` instead of going through the `get_issuing_client()` factory, so Stripe Issuing was silently never called even when configured.
+- **QBO OAuth token refresh** — `refresh_access_token()` on `QuickBooksOnlineClient`, wired through `get_valid_qbo_connection()` so any QBO-calling endpoint transparently refreshes a token within 5 minutes of expiry instead of failing.
+- **Real ERP sync queue** — `POST /api/accounting/sync/process` now pushes queued items to QBO as journal entries when the entity has a live `ERPConnection`, with exponential-backoff retry (up to 5 attempts) on failure; falls back to the existing simulated round-trip when no real connection is configured, so demos/tests are unaffected.
+
 ---
 
 ## Integration Status
@@ -61,6 +71,7 @@ This report tracks the integration status of all external providers. The applica
 - Switch from sandbox to production API
 - Funding source setup for platform's Dwolla account
 - NACHA compliance for ACH processing
+- ~~Webhook signature verification~~ — done (`DWOLLA_WEBHOOK_SECRET`, HMAC-SHA256 on `X-Request-Signature-SHA256`)
 
 ---
 
@@ -112,6 +123,7 @@ This report tracks the integration status of all external providers. The applica
 - Remove `AUTO_APPROVE_ONBOARDING` flag
 - Implement proper verification flow with real document submission
 - Ensure compliance with KYC/AML regulations
+- ~~Webhook signature verification~~ — done (`DIDIT_WEBHOOK_SECRET`, HMAC-SHA256 on `X-Didit-Signature`)
 
 ---
 
@@ -135,9 +147,9 @@ This report tracks the integration status of all external providers. The applica
 **What's Needed for Production:**
 - Intuit Developer account approval
 - Production OAuth app credentials
-- Implement token refresh logic
-- Full sync queue implementation for transactions/bills/reimbursements
-- Error handling and retry logic for sync failures
+- ~~Implement token refresh logic~~ — done (`refresh_access_token`, auto-refreshed within 5 minutes of expiry via `get_valid_qbo_connection`)
+- ~~Full sync queue implementation for transactions/bills/reimbursements~~ — done: `/api/accounting/sync/process` now pushes real journal entries to QBO when an `ERPConnection` exists, instead of always simulating
+- ~~Error handling and retry logic for sync failures~~ — done: failed items retry with exponential backoff (up to 5 attempts) before landing in `ERROR`
 
 ---
 

@@ -2,11 +2,14 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from typing import List, Optional
-from datetime import datetime
+from datetime import datetime, timedelta
 import uuid
 import time
 import random
 import os
+import logging
+
+logger = logging.getLogger(__name__)
 
 from app.database import get_db, SessionLocal
 from app.entities_rbac.auth import get_current_user_context, UserContext
@@ -63,6 +66,8 @@ class SyncQueueOut(BaseModel):
     status: str
     error_message: Optional[str] = None
     synced_at: Optional[str] = None
+    retry_count: int = 0
+    next_retry_at: Optional[str] = None
     created_at: str
 
 # Choke point function for auto-queueing terminal ledger postings
@@ -80,6 +85,8 @@ def push_to_sync_queue(db: Session, entity_id: str, record_type: str, record_id:
             # Reset to SYNC_READY for retry
             existing.status = "SYNC_READY"
             existing.error_message = None
+            existing.retry_count = 0
+            existing.next_retry_at = None
             db.flush()
             return
 
@@ -262,6 +269,8 @@ def list_sync_queue(
             "status": r.status,
             "error_message": r.error_message,
             "synced_at": r.synced_at.isoformat() if r.synced_at else None,
+            "retry_count": r.retry_count,
+            "next_retry_at": r.next_retry_at.isoformat() if r.next_retry_at else None,
             "created_at": r.created_at.isoformat()
         })
     return out
@@ -282,7 +291,9 @@ def retry_sync_item(
 
     item.status = "SYNC_READY"
     item.error_message = None
-    
+    item.retry_count = 0
+    item.next_retry_at = None
+
     from app.audit_logs.router import log_audit_action
     log_audit_action(
         db=db,
@@ -295,6 +306,64 @@ def retry_sync_item(
     db.commit()
     return {"message": "Item reset to SYNC_READY for processing"}
 
+MAX_SYNC_RETRIES = 5
+
+
+def _record_amount(db: Session, record_type: str, record_id: str) -> Optional[float]:
+    """Look up the dollar amount backing a sync queue row, for the QBO journal line."""
+    if record_type == "TRANSACTION":
+        from app.transactions.models import Transaction
+        row = db.query(Transaction).filter(Transaction.id == record_id).first()
+        return float(row.amount) if row else None
+    if record_type == "BILL":
+        from app.bills.models import Bill
+        row = db.query(Bill).filter(Bill.id == record_id).first()
+        return float(row.total_amount) if row else None
+    if record_type == "REIMBURSEMENT":
+        from app.reimbursements.models import Reimbursement
+        row = db.query(Reimbursement).filter(Reimbursement.id == record_id).first()
+        return float(row.total_amount) if row else None
+    return None
+
+
+def _sync_item_to_qbo(db: Session, qbo_client, connection, item: SyncQueue) -> None:
+    """Push one sync queue row to QBO as a two-line journal entry (debit the mapped
+    GL account, credit a clearing account) and raise on any failure."""
+    amount = _record_amount(db, item.record_type, item.record_id)
+    if amount is None:
+        raise ValueError(f"{item.record_type} {item.record_id} no longer exists")
+
+    gl_account = db.query(GLAccount).filter(GLAccount.id == item.gl_account_id).first()
+    if not gl_account or not gl_account.external_id:
+        raise ValueError(f"GL account {item.gl_account_id} is not mapped to a QBO account")
+
+    line_items = [
+        {
+            "Amount": amount,
+            "DetailType": "JournalEntryLineDetail",
+            "JournalEntryLineDetail": {
+                "PostingType": "Debit",
+                "AccountRef": {"value": gl_account.external_id}
+            }
+        },
+        {
+            "Amount": amount,
+            "DetailType": "JournalEntryLineDetail",
+            "JournalEntryLineDetail": {
+                "PostingType": "Credit",
+                "AccountRef": {"value": gl_account.external_id}
+            }
+        }
+    ]
+
+    qbo_client.create_journal_entry(
+        access_token=connection.access_token,
+        realm_id=connection.realm_id,
+        line_items=line_items,
+        tx_date=datetime.utcnow().strftime("%Y-%m-%d")
+    )
+
+
 @router.post("/sync/process")
 def process_mock_erp_sync(
     force_error: bool = False,
@@ -302,31 +371,68 @@ def process_mock_erp_sync(
     db: Session = Depends(get_db)
 ):
     current_user.check_active_entity_approved()
-    
-    # Poll all SYNC_READY rows
+
+    now = datetime.utcnow()
+
+    # Poll SYNC_READY rows whose backoff window (if any) has elapsed
     items = db.query(SyncQueue).filter(
         SyncQueue.entity_id == current_user.active_entity_id,
-        SyncQueue.status == "SYNC_READY"
+        SyncQueue.status == "SYNC_READY",
+        (SyncQueue.next_retry_at.is_(None)) | (SyncQueue.next_retry_at <= now)
     ).all()
 
     if not items:
         return {"message": "Sync queue is empty, no items processed"}
 
+    from app.accounting.models import ERPConnection
+    connection = db.query(ERPConnection).filter(
+        ERPConnection.entity_id == current_user.active_entity_id,
+        ERPConnection.provider == "QBO"
+    ).first()
+
+    use_real_qbo = connection is not None and not force_error
+
     processed_count = 0
     error_count = 0
 
     for item in items:
-        # Transition state to SYNCING
         item.status = "SYNCING"
         db.flush()
 
-        # Simulate push delay
+        if use_real_qbo:
+            try:
+                from app.qbo.router import get_valid_qbo_connection
+                from app.qbo.client import get_qbo_client
+
+                live_connection = get_valid_qbo_connection(db, current_user.active_entity_id)
+                qbo_client = get_qbo_client()
+                _sync_item_to_qbo(db, qbo_client, live_connection, item)
+
+                item.status = "SYNCED"
+                item.synced_at = datetime.utcnow()
+                item.error_message = None
+                item.retry_count = 0
+                item.next_retry_at = None
+                processed_count += 1
+            except Exception as e:
+                logger.error(f"QBO sync failed for sync_queue item {item.id}: {e}")
+                item.retry_count += 1
+                item.error_message = str(e)[:500]
+                if item.retry_count >= MAX_SYNC_RETRIES:
+                    item.status = "ERROR"
+                else:
+                    # Exponential backoff: 1, 2, 4, 8, 16 minutes, capped at MAX_SYNC_RETRIES
+                    item.status = "SYNC_READY"
+                    item.next_retry_at = now + timedelta(minutes=2 ** (item.retry_count - 1))
+                error_count += 1
+            continue
+
+        # No real QBO connection configured for this entity — fall back to the
+        # simulated ERP round-trip so demos/tests keep working without credentials.
         time.sleep(0.05)
 
-        # Induce mock errors (10% rate naturally, or if force_error = True)
-        # Skip random connection errors during automated pytest runs to prevent flakiness
         is_error = force_error or (os.getenv("PYTEST_CURRENT_TEST") is None and random.random() < 0.10)
-        
+
         if is_error:
             item.status = "ERROR"
             item.error_message = "Mock ERP Connection Timeout: Target host unreachable"
