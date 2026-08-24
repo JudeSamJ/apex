@@ -8,6 +8,28 @@ import uuid
 
 from app.approvals.models import Approval, ApprovalStep, ApprovalRule, ApprovalState
 
+def card_request_steps(requester_roles: List[str]) -> List[str]:
+    """Who must approve a card request, decided by who asked for it.
+
+    A card request is escalated one level above its requester, and never
+    sideways or downward:
+
+      ADMIN requests   -> nobody; the card is issued immediately
+      MANAGER requests -> ADMIN approves
+      anyone else      -> MANAGER approves
+
+    Amount plays no part. The previous amount-based routing sent every
+    request over its threshold through ["MANAGER", "ADMIN"], which meant an
+    admin's own request waited on a manager underneath them to sign off.
+    """
+    roles = set(requester_roles or [])
+    if "ADMIN" in roles:
+        return []
+    if "MANAGER" in roles:
+        return ["ADMIN"]
+    return ["MANAGER"]
+
+
 class ApprovalEngine:
     @staticmethod
     def submit_for_approval(
@@ -16,23 +38,27 @@ class ApprovalEngine:
         approvable_id: str,
         entity_id: str,
         department_id: str,
-        amount: Decimal
+        amount: Decimal,
+        requester_roles: Optional[List[str]] = None
     ) -> Approval:
-        # 1. Look for matching approval rules
-        rule = db.query(ApprovalRule).filter(
-            ApprovalRule.entity_id == entity_id,
-            ApprovalRule.applies_to == approvable_type,
-            ApprovalRule.min_amount <= amount,
-            or_(ApprovalRule.max_amount >= amount, ApprovalRule.max_amount.is_(None))
-        ).first()
-
-        # Fallback defaults if no rule matches
-        if rule:
-            steps_needed = rule.required_steps  # Expected format: List of roles/strings, e.g. ["MANAGER", "ADMIN"]
+        # Card requests route purely on the requester's role (see
+        # card_request_steps), so no ApprovalRule lookup for them — an
+        # amount-matched rule would otherwise reintroduce the manager step an
+        # admin's own request must not wait on.
+        if approvable_type == "CARD_REQUEST":
+            steps_needed = card_request_steps(requester_roles or [])
         else:
-            if approvable_type == "CARD_REQUEST":
-                # Card requests require Admin review by default if limit > 2000, else Manager
-                steps_needed = ["MANAGER", "ADMIN"] if amount > 2000 else ["MANAGER"]
+            # 1. Look for matching approval rules
+            rule = db.query(ApprovalRule).filter(
+                ApprovalRule.entity_id == entity_id,
+                ApprovalRule.applies_to == approvable_type,
+                ApprovalRule.min_amount <= amount,
+                or_(ApprovalRule.max_amount >= amount, ApprovalRule.max_amount.is_(None))
+            ).first()
+
+            # Fallback defaults if no rule matches
+            if rule:
+                steps_needed = rule.required_steps  # Expected format: List of roles/strings, e.g. ["MANAGER", "ADMIN"]
             elif approvable_type == "BILL":
                 # Bills require Admin by default
                 steps_needed = ["ADMIN"]
@@ -47,12 +73,22 @@ class ApprovalEngine:
             approvable_id=approvable_id,
             entity_id=entity_id,
             department_id=department_id,
-            current_step=1,
+            current_step=1 if steps_needed else 0,
             total_steps=len(steps_needed),
             state=ApprovalState.SUBMITTED
         )
         db.add(approval)
         db.flush()
+
+        # Nobody to ask: the requester already outranks every approver this
+        # type would route to. Approve on the spot and run the same callback a
+        # final human approval would have, so provisioning is identical either
+        # way. There is no step to notify anyone about.
+        if not steps_needed:
+            approval.state = ApprovalState.APPROVED
+            trigger_approval_callback(db, approval)
+            db.commit()
+            return approval
 
         # 3. Create the Approval steps
         for idx, role_name in enumerate(steps_needed):

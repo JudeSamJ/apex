@@ -167,7 +167,9 @@ def test_phase2_fintech_flow(client, db_session):
     # ==========================================
     # WORKFLOW 1: Card Request & Approval Engine
     # ==========================================
-    # Employee requests card with limit $2500 (exceeds $2000 rule threshold -> MANAGER & ADMIN steps)
+    # An employee's card request goes to their MANAGER, and only their manager —
+    # routing follows the requester's role, not the amount, so the $2000 rule
+    # threshold does not add a second ADMIN step here.
     response = client.post("/api/cards/request", headers=employee_headers, json={
         "spend_program_id": prog.id,
         "type": "VIRTUAL",
@@ -176,38 +178,25 @@ def test_phase2_fintech_flow(client, db_session):
     assert response.status_code == 200
     req_id = response.json()["id"]
 
-    # Verify Approval steps created (Step 1: MANAGER, Step 2: ADMIN)
     approval = db_session.query(Approval).filter(Approval.approvable_id == req_id).first()
     assert approval is not None
-    assert approval.total_steps == 2
+    assert approval.total_steps == 1
     assert approval.state == "SUBMITTED"
 
-    # Step 1 Inbox Check for Manager (Bob)
+    # The single step sits in the manager's inbox, not the admin's.
+    response = client.get("/api/approvals/inbox", headers=admin_headers)
+    assert response.status_code == 200
+    assert len(response.json()) == 0
+
     response = client.get("/api/approvals/inbox", headers=manager_headers)
     assert response.status_code == 200
     assert len(response.json()) == 1
     step_id = response.json()[0]["id"]
 
-    # Bob Manager approves Step 1
+    # Bob Manager approves, which is the whole chain — the card is issued.
     response = client.post(f"/api/approvals/steps/{step_id}/decide", headers=manager_headers, json={
         "decision": "APPROVED",
         "comment": "Manager approved"
-    })
-    assert response.status_code == 200
-    db_session.refresh(approval)
-    assert approval.state == "IN_REVIEW"
-    assert approval.current_step == 2
-
-    # Step 2 Inbox Check for Admin (Alice)
-    response = client.get("/api/approvals/inbox", headers=admin_headers)
-    assert response.status_code == 200
-    assert len(response.json()) == 1
-    step2_id = response.json()[0]["id"]
-
-    # Alice Admin approves final Step 2
-    response = client.post(f"/api/approvals/steps/{step2_id}/decide", headers=admin_headers, json={
-        "decision": "APPROVED",
-        "comment": "Admin final approval"
     })
     assert response.status_code == 200
     db_session.refresh(approval)
