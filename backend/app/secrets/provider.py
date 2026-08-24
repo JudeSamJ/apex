@@ -1,3 +1,8 @@
+# Populate os.environ from backend/.env before any secret is read. Also
+# imported by app.main, but this covers entry points that never touch it:
+# alembic's env.py, and the test suite.
+import app.dotenv_bootstrap  # noqa: F401  (imported for its side effect)
+
 import os
 import time
 import logging
