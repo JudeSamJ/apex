@@ -4,7 +4,11 @@ backend/uploads/
 # Python bytecode caches.
 __pycache__/
 *.pyc
+
+# Local environment files — real credentials live here, never in git.
+# Commit backend/.env.example (placeholders only) instead.
 .env
+.env.local
 # Local SQLite databases (dev db + its ATTACHed ledger file, and every test
 # suite's isolated db) — generated at runtime, never source. These used to
 # be committed, which meant a fresh checkout carried stale, un-migrated
