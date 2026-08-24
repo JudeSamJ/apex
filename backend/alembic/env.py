@@ -17,8 +17,16 @@ config = context.config
 
 # Interpret the config file for Python logging.
 # This line sets up loggers basically.
+#
+# disable_existing_loggers=False is essential, not cosmetic: init_db() runs
+# `alembic upgrade head` from inside the app's FastAPI startup event, so by
+# the time this executes uvicorn has already created its own loggers. With
+# fileConfig's default (True), this call silently disables them — the server
+# comes up perfectly but stops logging entirely from "Waiting for application
+# startup." onward, with no "Application startup complete." and no request
+# lines, which looks exactly like a hung boot.
 if config.config_file_name is not None:
-    fileConfig(config.config_file_name)
+    fileConfig(config.config_file_name, disable_existing_loggers=False)
 
 # Use this app's own DATABASE_URL resolution (secrets provider +
 # postgres:// -> postgresql+psycopg:// normalization) instead of a second,
