@@ -1,3 +1,4 @@
+import logging
 from typing import List, Optional
 from sqlalchemy import text
 from sqlalchemy.orm import Session
@@ -8,7 +9,45 @@ from datetime import datetime
 from app.ledger.models import LedgerEntry, EntryType, LedgerState, BalanceSnapshot
 from app.ledger.transitions import validate_transition
 
+logger = logging.getLogger(__name__)
+
+
 class LedgerClient:
+    @staticmethod
+    def use_serializable_isolation(db: Session) -> bool:
+        """Raise this transaction to SERIALIZABLE, if it is still legal to do so.
+
+        Postgres only accepts SET TRANSACTION ISOLATION LEVEL as the *first*
+        statement of a transaction; issuing it after any query fails with
+        "SET TRANSACTION ISOLATION LEVEL must be called before any query", and
+        because a failed statement aborts the surrounding Postgres transaction,
+        that error cannot simply be caught and ignored.
+
+        Every ledger entry point used to fire this unconditionally, which was
+        harmless on SQLite (no such restriction) but made each of them a
+        guaranteed 500 on Postgres: callers reasonably read their own rows
+        first — simulate_swipe locks the card with SELECT ... FOR UPDATE — so a
+        transaction is always already open by the time the ledger is called.
+
+        Returns whether the isolation level was actually raised. Call it before
+        the first query of a transaction to get the guarantee; from inside an
+        open transaction it is a no-op, leaving correctness to the row locks and
+        the idempotency_key uniqueness the ledger already relies on.
+        """
+        if not db.bind or db.bind.dialect.name == "sqlite":
+            return False
+
+        if db.in_transaction():
+            logger.debug(
+                "Ledger write joined an already-open transaction; leaving its "
+                "isolation level as-is (SET TRANSACTION ISOLATION LEVEL is only "
+                "valid as a transaction's first statement)."
+            )
+            return False
+
+        db.execute(text("SET TRANSACTION ISOLATION LEVEL SERIALIZABLE"))
+        return True
+
     @staticmethod
     def _apply_balance_delta(db: Session, entity_id: str, delta: Decimal, currency: str = "USD"):
         snapshot = db.query(BalanceSnapshot).filter(
@@ -45,8 +84,7 @@ class LedgerClient:
         idempotency_key: str,
         source_event_id: str
     ) -> List[LedgerEntry]:
-        if db.bind and db.bind.dialect.name != "sqlite":
-            db.execute(text("SET TRANSACTION ISOLATION LEVEL SERIALIZABLE"))
+        LedgerClient.use_serializable_isolation(db)
 
         existing = db.query(LedgerEntry).filter(LedgerEntry.idempotency_key == idempotency_key).all()
         if existing:
@@ -98,8 +136,7 @@ class LedgerClient:
         idempotency_key: str,
         source_event_id: str
     ) -> List[LedgerEntry]:
-        if db.bind and db.bind.dialect.name != "sqlite":
-            db.execute(text("SET TRANSACTION ISOLATION LEVEL SERIALIZABLE"))
+        LedgerClient.use_serializable_isolation(db)
 
         existing = db.query(LedgerEntry).filter(LedgerEntry.idempotency_key == idempotency_key).all()
         if existing:
@@ -175,8 +212,7 @@ class LedgerClient:
         idempotency_key: str,
         source_event_id: str
     ) -> List[LedgerEntry]:
-        if db.bind and db.bind.dialect.name != "sqlite":
-            db.execute(text("SET TRANSACTION ISOLATION LEVEL SERIALIZABLE"))
+        LedgerClient.use_serializable_isolation(db)
 
         existing = db.query(LedgerEntry).filter(LedgerEntry.idempotency_key == idempotency_key).all()
         if existing:

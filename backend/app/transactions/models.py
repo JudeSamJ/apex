@@ -39,6 +39,16 @@ class PipelineEvent(Base):
     source_event_id = Column(String(36), nullable=False)
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
 
+    # Not for convenient attribute access — this exists to give the unit of
+    # work an ordering constraint. A table-level ForeignKey alone does not
+    # tell SQLAlchemy which mapper to INSERT first; that comes from
+    # relationship(). Without it, a flush holding both a new Transaction and
+    # its new PipelineEvent could emit the event row first and trip
+    # pipeline_events_transaction_id_fkey. SQLite never caught this (it does
+    # not enforce foreign keys unless PRAGMA foreign_keys=ON), so it only
+    # appeared once the app ran against Postgres.
+    transaction = relationship("Transaction")
+
 
 class TransactionReceipt(Base):
     """A receipt (image/PDF) attached to a transaction for expense
