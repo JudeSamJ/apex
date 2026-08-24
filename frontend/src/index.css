@@ -231,6 +231,35 @@ label {
   border: 1px solid rgba(239, 68, 68, 0.2);
 }
 
+/* Count bubble pinned to an icon button (e.g. unread notifications on the
+   bell). Deliberately not a .badge-* colour modifier: those use a 10-15%
+   translucent tint, which over an icon lets the glyph read straight through
+   the digits. This one is opaque so the count sits in front, and is a circle
+   sized to the number rather than a pill. */
+.badge-count {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  z-index: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 9999px;
+  background: var(--color-danger);
+  color: #fff;
+  border: 2px solid var(--bg-card);
+  font-size: 0.65rem;
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: 0;
+  text-transform: none;
+  pointer-events: none;
+}
+
 .badge-info {
   background: var(--color-primary-glow);
   color: var(--color-primary);
