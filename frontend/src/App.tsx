@@ -2507,7 +2507,7 @@ export default function App() {
                 >
                   <Bell size={16} />
                   {notifications.filter(n => !n.read).length > 0 && (
-                    <span className="badge badge-danger" style={{ position: 'absolute', top: '-6px', right: '-6px', fontSize: '0.6rem' }}>
+                    <span className="badge-count">
                       {notifications.filter(n => !n.read).length}
                     </span>
                   )}

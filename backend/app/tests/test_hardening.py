@@ -1160,3 +1160,92 @@ def test_multi_currency_cards_convert_correctly_for_limits_and_reporting(db_sess
     expected_total = round(150.0 * (1 / 0.92), 2) + 50.0
     assert metrics["total_spend"] == expected_total
 
+
+
+def test_card_request_routing_follows_requester_role(db_session):
+    """Card requests escalate one level above whoever raised them.
+
+    An admin's request needs no approval at all — it used to sit waiting on a
+    manager beneath them, because routing keyed off the amount rather than the
+    requester.
+    """
+    db = db_session
+    from app.approvals.models import Approval, ApprovalStep
+
+    for role_id, role_name in (("ADMIN", "Admin"), ("MANAGER", "Manager"), ("EMPLOYEE", "Employee")):
+        if not db.query(Role).filter(Role.id == role_id).first():
+            db.add(Role(id=role_id, name=role_name))
+    db.commit()
+
+    entity = Entity(id="route-ent-1", name="Routing Entity", onboarding_status="APPROVED")
+    dept = Department(id="route-dept-1", entity_id=entity.id, name="Routing Dept")
+    db.add_all([entity, dept])
+    db.flush()
+
+    users = {}
+    for role_id in ("ADMIN", "MANAGER", "EMPLOYEE"):
+        user = User(
+            id=f"route-{role_id.lower()}-1",
+            name=f"Routing {role_id.title()}",
+            email=f"route-{role_id.lower()}@apex.com",
+            entity_id=entity.id,
+            password_hash=get_password_hash("password123"),
+        )
+        db.add(user)
+        db.flush()
+        db.add(UserRole(user_id=user.id, role_id=role_id, entity_id=entity.id, department_id=dept.id))
+        users[role_id] = user
+
+    program = SpendProgram(
+        id="route-prog-1", name="Routing Stipend", limit_amount=Decimal("9000.00"),
+        limit_type="MONTHLY", entity_id=entity.id,
+    )
+    db.add(program)
+
+    # An amount-matched rule that would previously have forced two steps. Card
+    # requests must ignore it entirely now.
+    from app.approvals.models import ApprovalRule
+    db.add(ApprovalRule(
+        id="route-rule-1", entity_id=entity.id, applies_to="CARD_REQUEST",
+        min_amount=Decimal("2000.00"), max_amount=None, required_steps=["MANAGER", "ADMIN"],
+    ))
+    db.commit()
+
+    def request_card_as(role_id):
+        token = client.post(
+            "/api/auth/token",
+            data={"username": f"route-{role_id.lower()}@apex.com", "password": "password123"},
+        ).json()["access_token"]
+        headers = {"Authorization": f"Bearer {token}", "X-Entity-Id": entity.id}
+        response = client.post("/api/cards/request", headers=headers, json={
+            "spend_program_id": program.id, "type": "VIRTUAL", "limit_amount": 5000.00,
+        })
+        assert response.status_code == 200, response.text
+        body = response.json()
+        approval = db.query(Approval).filter(Approval.approvable_id == body["id"]).first()
+        steps = [
+            s.approver_role for s in
+            db.query(ApprovalStep).filter(ApprovalStep.approval_id == approval.id)
+            .order_by(ApprovalStep.step_number)
+        ]
+        return body, approval, steps
+
+    # ADMIN: no approvers, card issued on the spot.
+    body, approval, steps = request_card_as("ADMIN")
+    assert steps == []
+    assert approval.total_steps == 0
+    assert approval.state == "APPROVED"
+    assert body["status"] == "APPROVED"
+    assert db.query(Card).filter(Card.owner_id == users["ADMIN"].id).count() == 1
+
+    # MANAGER: escalates to an admin, no card until then.
+    body, approval, steps = request_card_as("MANAGER")
+    assert steps == ["ADMIN"]
+    assert body["status"] == "PENDING_APPROVAL"
+    assert db.query(Card).filter(Card.owner_id == users["MANAGER"].id).count() == 0
+
+    # EMPLOYEE: escalates to their manager only, despite the $2000 rule.
+    body, approval, steps = request_card_as("EMPLOYEE")
+    assert steps == ["MANAGER"]
+    assert body["status"] == "PENDING_APPROVAL"
+    assert db.query(Card).filter(Card.owner_id == users["EMPLOYEE"].id).count() == 0

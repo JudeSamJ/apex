@@ -158,7 +158,8 @@ def request_card(
         approvable_id=card_req.id,
         entity_id=card_req.entity_id,
         department_id=card_req.department_id,
-        amount=card_req.limit_amount
+        amount=card_req.limit_amount,
+        requester_roles=current_user.roles
     )
     db.commit()
     db.refresh(card_req)

@@ -1,3 +1,7 @@
+# Must precede every other app import: it populates os.environ from
+# backend/.env, and app.database resolves DATABASE_URL at import time.
+import app.dotenv_bootstrap  # noqa: F401  (imported for its side effect)
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.database import init_db

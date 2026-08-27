@@ -130,7 +130,13 @@ def simulate_swipe(
     db: Session = Depends(get_db)
 ):
     current_user.check_active_entity_approved()
-    
+
+    # Before the first query of this transaction, so it is still legal to ask
+    # for it: the whole swipe — card lock, limit checks, ledger hold — wants to
+    # be serializable, and Postgres only accepts the isolation level as a
+    # transaction's opening statement.
+    LedgerClient.use_serializable_isolation(db)
+
     # 1. Fetch card with row-level locking
     card = db.query(Card).filter(
         Card.id == swipe.card_id,
