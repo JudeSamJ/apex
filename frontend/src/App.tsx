@@ -54,6 +54,7 @@ interface Entity {
   name: string;
   onboarding_status: string;
   parent_entity_id: string | null;
+  base_currency?: string;
 }
 
 interface Department {
@@ -442,6 +443,10 @@ export default function App() {
 
   // Admin: pending user registrations awaiting approval
   const [pendingUsers, setPendingUsers] = useState<PendingUser[]>([]);
+  const [pendingEntities, setPendingEntities] = useState<Entity[]>([]);
+  const [newCompanyName, setNewCompanyName] = useState('');
+  const [newCompanyCurrency, setNewCompanyCurrency] = useState('USD');
+  const [newCompanyParentId, setNewCompanyParentId] = useState('');
   const [pendingApproveRole, setPendingApproveRole] = useState<Record<string, string>>({});
   const [pendingApproveDept, setPendingApproveDept] = useState<Record<string, string>>({});
 
@@ -583,6 +588,7 @@ export default function App() {
   useEffect(() => {
     if (user) {
       fetchEntities();
+      fetchPendingEntities();
       fetchDepartments();
       fetchSpendPrograms();
       fetchMetrics();
@@ -984,6 +990,64 @@ export default function App() {
       const data = await res.json();
       setEntities(data);
     } catch (e) { console.error(e); }
+  };
+
+  const fetchPendingEntities = async () => {
+    try {
+      const res = await fetch(`${API_BASE}/api/auth/entities/pending`, { headers: getHeaders() });
+      // 403 for anyone who is not a root-entity admin; an empty queue is the
+      // right rendering for them, not an error.
+      if (!res.ok) { setPendingEntities([]); return; }
+      setPendingEntities(await res.json());
+    } catch (e) { console.error(e); }
+  };
+
+  const handleCreateCompany = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setErrorMessage(null);
+    setSuccessMessage(null);
+    try {
+      const res = await fetch(`${API_BASE}/api/auth/entities`, {
+        method: 'POST',
+        headers: { ...getHeaders(), 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: newCompanyName,
+          base_currency: newCompanyCurrency,
+          parent_entity_id: newCompanyParentId || null,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || 'Failed to create company');
+      setSuccessMessage(
+        data.onboarding_status === 'APPROVED'
+          ? `${data.name} created and live. Switch to it from the company picker.`
+          : `${data.name} created and sent for approval.`
+      );
+      setNewCompanyName('');
+      setNewCompanyParentId('');
+      fetchEntities();
+      fetchPendingEntities();
+    } catch (err: any) {
+      setErrorMessage(err.message);
+    }
+  };
+
+  const handleSetEntityStatus = async (entityId: string, status: string) => {
+    setErrorMessage(null);
+    setSuccessMessage(null);
+    try {
+      const res = await fetch(`${API_BASE}/api/auth/entities/${entityId}/status?status=${status}`, {
+        method: 'POST',
+        headers: getHeaders(),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || 'Failed to update company status');
+      setSuccessMessage(`Company ${status.toLowerCase()}.`);
+      fetchEntities();
+      fetchPendingEntities();
+    } catch (err: any) {
+      setErrorMessage(err.message);
+    }
   };
 
   const fetchDepartments = async () => {
@@ -4169,6 +4233,73 @@ export default function App() {
                   <p style={{ color: 'var(--text-secondary)', fontSize: '0.85rem' }}>Unread Admin Notifications</p>
                   <p style={{ fontSize: '1.75rem', fontWeight: 800 }}>{opsSummary.unread_admin_notifications}</p>
                 </div>
+              </div>
+            )}
+
+            {user.roles.includes('ADMIN') && (
+              <div className="card" style={{ marginBottom: '2rem' }}>
+                <h3 style={{ fontSize: '1.1rem', fontWeight: 700, marginBottom: '1rem' }}>Companies</h3>
+
+                <form onSubmit={handleCreateCompany} style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap', alignItems: 'flex-end', marginBottom: '1.25rem' }}>
+                  <div style={{ flex: '2 1 220px' }}>
+                    <label>Company name</label>
+                    <input
+                      value={newCompanyName}
+                      onChange={(e) => setNewCompanyName(e.target.value)}
+                      placeholder="Northwind Trading"
+                      required
+                    />
+                  </div>
+                  <div style={{ flex: '1 1 120px' }}>
+                    <label>Base currency</label>
+                    <select value={newCompanyCurrency} onChange={(e) => setNewCompanyCurrency(e.target.value)}>
+                      {supportedCurrencies.map(c => <option key={c} value={c}>{c}</option>)}
+                    </select>
+                  </div>
+                  <div style={{ flex: '1 1 180px' }}>
+                    <label>Parent company (optional)</label>
+                    <select value={newCompanyParentId} onChange={(e) => setNewCompanyParentId(e.target.value)}>
+                      <option value="">None — standalone</option>
+                      {entities.map(ent => <option key={ent.id} value={ent.id}>{ent.name}</option>)}
+                    </select>
+                  </div>
+                  <button type="submit" className="btn btn-primary">Create company</button>
+                </form>
+
+                <p style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', marginBottom: '1.5rem' }}>
+                  {activeEntity && activeEntity.parent_entity_id === null
+                    ? 'Companies you create here go live immediately, and you are added as their admin.'
+                    : 'Companies you create are sent to a top-level admin for approval before they can transact.'}
+                </p>
+
+                {activeEntity && activeEntity.parent_entity_id === null && (
+                  <div style={{ borderTop: '1px solid var(--border-color)', paddingTop: '1rem', marginBottom: '1.5rem' }}>
+                    <h4 style={{ fontSize: '0.9rem', fontWeight: 700, marginBottom: '0.75rem' }}>
+                      Companies Awaiting Approval
+                      {pendingEntities.length > 0 && (
+                        <span className="badge badge-warning" style={{ marginLeft: '0.5rem', fontSize: '0.7rem' }}>{pendingEntities.length}</span>
+                      )}
+                    </h4>
+                    {pendingEntities.length === 0 && (
+                      <p style={{ color: 'var(--text-secondary)', fontSize: '0.9rem' }}>No companies awaiting approval.</p>
+                    )}
+                    {pendingEntities.map(ent => (
+                      <div key={ent.id} style={{ borderBottom: '1px solid var(--border-color)', padding: '0.75rem 0', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '0.75rem' }}>
+                        <div>
+                          <p style={{ fontWeight: 600, fontSize: '0.9rem' }}>{ent.name}</p>
+                          <p style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>
+                            Base currency {ent.base_currency || 'USD'}
+                            {ent.parent_entity_id ? ` — subsidiary of ${entities.find(e2 => e2.id === ent.parent_entity_id)?.name || ent.parent_entity_id}` : ' — standalone'}
+                          </p>
+                        </div>
+                        <div style={{ display: 'flex', gap: '0.5rem' }}>
+                          <button className="btn btn-primary" style={{ fontSize: '0.8rem' }} onClick={() => handleSetEntityStatus(ent.id, 'APPROVED')}>Approve</button>
+                          <button className="btn btn-secondary" style={{ fontSize: '0.8rem', color: 'var(--color-danger)' }} onClick={() => handleSetEntityStatus(ent.id, 'SUSPENDED')}>Reject</button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
             )}
 

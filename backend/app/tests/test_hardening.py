@@ -1249,3 +1249,101 @@ def test_card_request_routing_follows_requester_role(db_session):
     assert steps == ["MANAGER"]
     assert body["status"] == "PENDING_APPROVAL"
     assert db.query(Card).filter(Card.owner_id == users["EMPLOYEE"].id).count() == 0
+
+
+def test_company_creation_and_root_admin_approval(db_session):
+    """Only a root-entity admin creates a company live; everyone else's
+    creation waits in that admin's queue."""
+    db = db_session
+
+    for role_id, role_name in (("ADMIN", "Admin"), ("MANAGER", "Manager")):
+        if not db.query(Role).filter(Role.id == role_id).first():
+            db.add(Role(id=role_id, name=role_name))
+    db.commit()
+
+    root = Entity(id="co-root-1", name="Co Root Group", onboarding_status="APPROVED")
+    db.add(root)
+    db.flush()
+    sub = Entity(
+        id="co-sub-1", name="Co Sub Ltd", onboarding_status="APPROVED",
+        parent_entity_id=root.id,
+    )
+    dept = Department(id="co-root-dept-1", entity_id=root.id, name="Ops")
+    db.add_all([sub, dept])
+    db.flush()
+
+    def make_user(uid, email, entity_id, role_id):
+        user = User(
+            id=uid, name=uid, email=email, entity_id=entity_id,
+            password_hash=get_password_hash("password123"),
+        )
+        db.add(user)
+        db.flush()
+        db.add(UserRole(user_id=user.id, role_id=role_id, entity_id=entity_id))
+        return user
+
+    root_admin = make_user("co-root-admin", "co-root-admin@apex.com", root.id, "ADMIN")
+    sub_admin = make_user("co-sub-admin", "co-sub-admin@apex.com", sub.id, "ADMIN")
+    manager = make_user("co-mgr", "co-mgr@apex.com", root.id, "MANAGER")
+    db.commit()
+
+    def headers_for(email, entity_id):
+        token = client.post(
+            "/api/auth/token", data={"username": email, "password": "password123"}
+        ).json()["access_token"]
+        return {"Authorization": f"Bearer {token}", "X-Entity-Id": entity_id}
+
+    root_headers = headers_for(root_admin.email, root.id)
+    sub_headers = headers_for(sub_admin.email, sub.id)
+    mgr_headers = headers_for(manager.email, root.id)
+
+    # A manager cannot create a company at all.
+    denied = client.post("/api/auth/entities", headers=mgr_headers, json={"name": "Nope Inc"})
+    assert denied.status_code == 403
+
+    # The root admin's company is live immediately, with departments seeded so
+    # it can actually issue cards.
+    created = client.post("/api/auth/entities", headers=root_headers, json={
+        "name": "Northwind Trading", "base_currency": "EUR",
+    })
+    assert created.status_code == 200, created.text
+    body = created.json()
+    assert body["onboarding_status"] == "APPROVED"
+    assert body["base_currency"] == "EUR"
+    assert db.query(Department).filter(Department.entity_id == body["id"]).count() == 4
+
+    # ...and the creator can switch into it, which needs a role there.
+    switched = client.get("/api/auth/entities", headers=headers_for(root_admin.email, body["id"]))
+    assert switched.status_code == 200
+
+    # A subsidiary admin's company waits for approval.
+    pending = client.post("/api/auth/entities", headers=sub_headers, json={"name": "Contoso Retail"})
+    assert pending.status_code == 200, pending.text
+    pending_id = pending.json()["id"]
+    assert pending.json()["onboarding_status"] == "PENDING"
+
+    # It shows up in the root admin's queue, and not in a subsidiary admin's.
+    queue = client.get("/api/auth/entities/pending", headers=root_headers)
+    assert queue.status_code == 200
+    assert pending_id in [e["id"] for e in queue.json()]
+    assert client.get("/api/auth/entities/pending", headers=sub_headers).status_code == 403
+
+    # The subsidiary admin cannot approve their own company.
+    self_approve = client.post(
+        f"/api/auth/entities/{pending_id}/status?status=APPROVED", headers=sub_headers
+    )
+    assert self_approve.status_code == 403
+    db.refresh(db.query(Entity).filter(Entity.id == pending_id).first())
+    assert db.query(Entity).filter(Entity.id == pending_id).first().onboarding_status == "PENDING"
+
+    # The root admin can.
+    approved = client.post(
+        f"/api/auth/entities/{pending_id}/status?status=APPROVED", headers=root_headers
+    )
+    assert approved.status_code == 200
+    db.expire_all()
+    assert db.query(Entity).filter(Entity.id == pending_id).first().onboarding_status == "APPROVED"
+
+    # Duplicate names are refused.
+    dupe = client.post("/api/auth/entities", headers=root_headers, json={"name": "Northwind Trading"})
+    assert dupe.status_code == 400

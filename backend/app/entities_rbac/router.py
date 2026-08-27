@@ -450,15 +450,160 @@ class EntityOut(BaseModel):
     name: str
     onboarding_status: str
     parent_entity_id: Optional[str] = None
+    base_currency: str = "USD"
 
 class DepartmentOut(BaseModel):
     id: str
     entity_id: str
     name: str
 
+DEFAULT_DEPARTMENTS = ["Engineering", "Sales", "Marketing", "Finance"]
+
+
+def is_root_entity_admin(current_user: UserContext, db: Session) -> bool:
+    """Whether this user administers a top-level company.
+
+    A root entity is one with no parent (Apex Corporation in the seeded demo
+    data); its admins are the only people who can approve a company someone
+    else created. An admin of a subsidiary administers that subsidiary only.
+    """
+    if not current_user.is_admin:
+        return False
+    entity = db.query(Entity).filter(Entity.id == current_user.active_entity_id).first()
+    return bool(entity and entity.parent_entity_id is None)
+
+
+def require_root_entity_admin(current_user: UserContext, db: Session) -> None:
+    if not is_root_entity_admin(current_user, db):
+        raise HTTPException(
+            status_code=403,
+            detail="Only an admin of a top-level company can review company onboarding",
+        )
+
+
+class EntityCreate(BaseModel):
+    name: str
+    base_currency: Optional[str] = None
+    # Omitted, the company stands on its own. Set it to nest the new company
+    # under an existing one as a subsidiary.
+    parent_entity_id: Optional[str] = None
+    # Omitted, DEFAULT_DEPARTMENTS are created. A company with no department
+    # at all cannot issue cards — card requests resolve a department and 400
+    # with "No department set up for this entity".
+    departments: Optional[List[str]] = None
+
+
+@router.post("/entities", response_model=EntityOut)
+def create_entity(
+    entity_in: EntityCreate,
+    current_user: UserContext = Depends(get_current_user_context),
+    db: Session = Depends(get_db)
+):
+    """Create a company.
+
+    Created live by a root-entity admin, and PENDING for anyone else — the
+    same shape as card requests, where a request from someone who already
+    outranks every approver has nobody left to wait on. A PENDING company
+    exists but is barred from transacting until a root-entity admin approves
+    it (check_active_entity_approved gates every money-moving endpoint).
+    """
+    if not current_user.is_admin:
+        raise HTTPException(status_code=403, detail="Only Admins can create companies")
+
+    name = entity_in.name.strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Company name is required")
+
+    if db.query(Entity).filter(Entity.name == name).first():
+        raise HTTPException(status_code=400, detail=f"A company named '{name}' already exists")
+
+    from app.fx.client import SUPPORTED_CURRENCIES
+    base_currency = (entity_in.base_currency or "USD").upper()
+    if base_currency not in SUPPORTED_CURRENCIES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported base currency; must be one of {sorted(SUPPORTED_CURRENCIES)}",
+        )
+
+    parent_entity_id = entity_in.parent_entity_id
+    if parent_entity_id:
+        parent = db.query(Entity).filter(Entity.id == parent_entity_id).first()
+        if not parent:
+            raise HTTPException(status_code=404, detail="Parent company not found")
+
+    created_live = is_root_entity_admin(current_user, db)
+    entity = Entity(
+        name=name,
+        onboarding_status=(
+            OnboardingStatus.APPROVED.value if created_live else OnboardingStatus.PENDING.value
+        ),
+        parent_entity_id=parent_entity_id,
+        base_currency=base_currency,
+    )
+    db.add(entity)
+    db.flush()
+
+    for dept_name in (entity_in.departments or DEFAULT_DEPARTMENTS):
+        dept_name = dept_name.strip()
+        if dept_name:
+            db.add(Department(entity_id=entity.id, name=dept_name))
+
+    # The creator needs a role on the new company or they cannot switch into
+    # the thing they just made — get_current_user_context rejects an entity the
+    # user holds no role in, and only inherits roles down to a subsidiary of
+    # the user's own primary entity.
+    db.add(UserRole(user_id=current_user.user_id, role_id="ADMIN", entity_id=entity.id))
+
+    from app.audit_logs.router import log_audit_action
+    log_audit_action(
+        db=db,
+        entity_id=entity.id,
+        user_id=current_user.user_id,
+        action="ENTITY_CREATED",
+        details={
+            "name": entity.name,
+            "base_currency": entity.base_currency,
+            "parent_entity_id": entity.parent_entity_id,
+            "onboarding_status": entity.onboarding_status,
+            "created_by": current_user.email,
+        },
+    )
+    db.commit()
+    db.refresh(entity)
+
+    if not created_live:
+        # Tell the people who can actually approve it. Root-entity admins hold
+        # their ADMIN role on the root entity, not on this pending one.
+        from app.notifications.service import notify_users_with_role
+        for root in db.query(Entity).filter(Entity.parent_entity_id.is_(None)).all():
+            notify_users_with_role(
+                db=db,
+                entity_id=root.id,
+                role_id="ADMIN",
+                type="APPROVAL_REQUESTED",
+                title="New company awaiting approval",
+                body=f"{current_user.name} created '{entity.name}', which needs onboarding approval.",
+            )
+        db.commit()
+
+    return entity
+
+
 @router.get("/entities", response_model=List[EntityOut])
 def list_entities(db: Session = Depends(get_db)):
     return db.query(Entity).all()
+
+
+@router.get("/entities/pending", response_model=List[EntityOut])
+def list_pending_entities(
+    current_user: UserContext = Depends(get_current_user_context),
+    db: Session = Depends(get_db)
+):
+    """Companies awaiting onboarding approval, for the root admin's queue."""
+    require_root_entity_admin(current_user, db)
+    return db.query(Entity).filter(
+        Entity.onboarding_status == OnboardingStatus.PENDING.value
+    ).all()
 
 @router.get("/departments", response_model=List[DepartmentOut])
 def list_departments(
@@ -475,17 +620,34 @@ def update_entity_status(
     current_user: UserContext = Depends(get_current_user_context),
     db: Session = Depends(get_db)
 ):
-    if not current_user.is_admin:
-        raise HTTPException(status_code=403, detail="Only Admins can update onboarding status")
-    
+    # Any admin used to be able to flip any company's onboarding status,
+    # including their own from PENDING to APPROVED — self-approval. Approving a
+    # company is a root-entity admin's call.
+    require_root_entity_admin(current_user, db)
+
     entity = db.query(Entity).filter(Entity.id == entity_id).first()
     if not entity:
         raise HTTPException(status_code=404, detail="Entity not found")
-        
+
     if status not in [OnboardingStatus.APPROVED.value, OnboardingStatus.PENDING.value, OnboardingStatus.SUSPENDED.value]:
         raise HTTPException(status_code=400, detail="Invalid status")
         
+    previous_status = entity.onboarding_status
     entity.onboarding_status = status
+
+    from app.audit_logs.router import log_audit_action
+    log_audit_action(
+        db=db,
+        entity_id=entity.id,
+        user_id=current_user.user_id,
+        action="ENTITY_STATUS_CHANGED",
+        details={
+            "name": entity.name,
+            "from": previous_status,
+            "to": status,
+            "changed_by": current_user.email,
+        },
+    )
     db.commit()
     return {"message": "Entity status updated successfully", "entity_id": entity_id, "status": status}
 
