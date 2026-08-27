@@ -24,6 +24,20 @@ import {
 
 const API_BASE = 'http://localhost:8000';
 
+// Distinct, accessible colors for per-series chart elements (e.g. one bar
+// per department) — cycled by index so any number of departments still get
+// visually distinguishable colors instead of one repeated accent color.
+const DEPARTMENT_CHART_COLORS = [
+  '#3b82f6', // blue
+  '#10b981', // emerald
+  '#f59e0b', // amber
+  '#ef4444', // rose
+  '#a855f7', // purple
+  '#06b6d4', // cyan
+  '#ec4899', // pink
+  '#84cc16', // lime
+];
+
 interface UserMe {
   id: string;
   email: string;
@@ -590,12 +604,12 @@ export default function App() {
       fetchDisputes();
       fetchScreenings();
       fetchReconciliationRuns();
-      fetchNecReport();
       if (user.roles.includes('ADMIN') || user.roles.includes('BOOKKEEPER')) {
         fetchAdminKPIs();
         fetchAuditLogs();
         fetchBackgroundJobs();
         fetchOpsSummary();
+        fetchNecReport();
       }
       if (user.roles.includes('ADMIN')) {
         fetchSsoConnections();
@@ -605,7 +619,7 @@ export default function App() {
   }, [user, activeEntityId]);
 
   useEffect(() => {
-    if (user) fetchNecReport();
+    if (user && (user.roles.includes('ADMIN') || user.roles.includes('BOOKKEEPER'))) fetchNecReport();
   }, [necYear]);
 
   useEffect(() => {
@@ -2360,7 +2374,7 @@ export default function App() {
   return (
     <div className="app-container">
       {/* Sidebar Navigation */}
-      <div style={{ width: '260px', borderRight: '1px solid var(--border-color)', background: '#0e1014', padding: '1.5rem', display: 'flex', flexDirection: 'column', justifyContent: 'space-between' }}>
+      <div className="app-sidebar" style={{ width: '260px', borderRight: '1px solid var(--border-color)', background: '#0e1014', padding: '1.5rem', display: 'flex', flexDirection: 'column', justifyContent: 'space-between' }}>
         <div>
           <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '2.5rem' }}>
             <CreditCard size={28} color="var(--color-primary)" />
@@ -2743,14 +2757,18 @@ export default function App() {
                     {metrics.spend_by_department.map((dept, i) => {
                       const maxDeptVal = Math.max(...metrics.spend_by_department.map(d => d.amount), 1);
                       const percent = (dept.amount / maxDeptVal) * 100;
+                      const barColor = DEPARTMENT_CHART_COLORS[i % DEPARTMENT_CHART_COLORS.length];
                       return (
                         <div key={i}>
                           <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.85rem', marginBottom: '0.35rem' }}>
-                            <span style={{ fontWeight: 600 }}>{dept.department}</span>
+                            <span style={{ fontWeight: 600, display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                              <span style={{ width: '8px', height: '8px', borderRadius: '50%', background: barColor, display: 'inline-block' }} />
+                              {dept.department}
+                            </span>
                             <span style={{ color: 'var(--text-secondary)' }}>${dept.amount.toFixed(2)}</span>
                           </div>
                           <div style={{ width: '100%', height: '8px', background: 'rgba(255,255,255,0.05)', borderRadius: '4px', overflow: 'hidden' }}>
-                            <div style={{ width: `${percent}%`, height: '100%', background: 'var(--color-primary)', borderRadius: '4px' }} />
+                            <div style={{ width: `${percent}%`, height: '100%', background: barColor, borderRadius: '4px' }} />
                           </div>
                         </div>
                       );
@@ -3440,6 +3458,49 @@ export default function App() {
                 </form>
               </div>
             )}
+
+            {/* Chart of Accounts list */}
+            <div className="card">
+              <h3 style={{ fontSize: '1.1rem', fontWeight: 700, marginBottom: '0.5rem' }}>Chart of Accounts</h3>
+              <p style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', marginBottom: '1.5rem' }}>
+                The general ledger accounts transactions, bills, and reimbursements get coded to. Add accounts above,
+                then use them in the auto-coding rules and custom fields below.
+              </p>
+              <div style={{ overflowX: 'auto' }}>
+                <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left' }}>
+                  <thead>
+                    <tr style={{ borderBottom: '1px solid var(--border-color)', color: 'var(--text-secondary)', fontSize: '0.85rem' }}>
+                      <th style={{ padding: '0.75rem' }}>GL Code</th>
+                      <th style={{ padding: '0.75rem' }}>Account Name</th>
+                      <th style={{ padding: '0.75rem' }}>Type</th>
+                      <th style={{ padding: '0.75rem' }}>Status</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {glAccounts.length === 0 ? (
+                      <tr>
+                        <td colSpan={4} style={{ padding: '2rem', textAlign: 'center', color: 'var(--text-muted)' }}>
+                          {user.roles.includes('ADMIN')
+                            ? 'No GL accounts yet. Add your first one above.'
+                            : 'No GL accounts have been set up yet. Ask an Admin to add one.'}
+                        </td>
+                      </tr>
+                    ) : (
+                      glAccounts.map(g => (
+                        <tr key={g.id} style={{ borderBottom: '1px solid var(--border-color)', fontSize: '0.9rem' }}>
+                          <td style={{ padding: '0.75rem', fontWeight: 700 }}>{g.code}</td>
+                          <td style={{ padding: '0.75rem' }}>{g.name}</td>
+                          <td style={{ padding: '0.75rem' }}><span className="badge badge-info">{g.type}</span></td>
+                          <td style={{ padding: '0.75rem' }}>
+                            {g.is_active ? <span className="badge badge-success">Active</span> : <span className="badge badge-warning">Inactive</span>}
+                          </td>
+                        </tr>
+                      ))
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
 
             {/* Create GL mappings */}
             {user.roles.includes('ADMIN') && (

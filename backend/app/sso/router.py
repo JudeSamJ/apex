@@ -9,7 +9,7 @@ from typing import List, Optional
 from app.database import get_db
 from app.entities_rbac.auth import get_current_user_context, UserContext, get_password_hash, create_access_token
 from app.entities_rbac.models import Entity, User, Role, UserRole
-from app.sso.client import get_sso_client
+from app.sso.client import get_sso_client, MockSSOClient
 from app.sso.models import SSOConnection
 
 logger = logging.getLogger(__name__)
@@ -55,7 +55,10 @@ def _to_out(c: SSOConnection) -> dict:
 
 
 def _redirect_uri() -> str:
-    return f"{os.getenv('APP_BASE_URL', 'http://localhost:8000')}/sso-callback"
+    # This must point at the frontend SPA (which has the code-exchange
+    # handler), not APP_BASE_URL (the backend API) — sending the IdP
+    # redirect to the backend 404s and strands the user mid-login.
+    return f"{os.getenv('FRONTEND_BASE_URL', 'http://localhost:5173')}/sso-callback"
 
 
 @router.post("/connections", response_model=ConnectionOut)
@@ -170,11 +173,22 @@ def get_login_url(email: EmailStr, db: Session = Depends(get_db)):
 
     sso_client = get_sso_client()
     state = str(uuid.uuid4())
-    authorization_url = sso_client.get_authorization_url(
-        connection_id=connection.workos_connection_id,
-        redirect_uri=_redirect_uri(),
-        state=state,
-    )
+
+    if isinstance(sso_client, MockSSOClient):
+        # There's no real IdP to redirect to in sandbox/demo mode — sending
+        # the browser to get_authorization_url's placeholder domain
+        # (mock-sso.example.com) just strands it on a page that can't
+        # resolve. Skip the external hop entirely and go straight to the
+        # frontend's callback with a simulated code, exactly like a real
+        # IdP would eventually land there.
+        code = MockSSOClient.simulate_authorization_code(email=email, connection_id=connection.workos_connection_id)
+        authorization_url = f"{_redirect_uri()}?code={code}&state={state}"
+    else:
+        authorization_url = sso_client.get_authorization_url(
+            connection_id=connection.workos_connection_id,
+            redirect_uri=_redirect_uri(),
+            state=state,
+        )
     return {"authorization_url": authorization_url}
 
 

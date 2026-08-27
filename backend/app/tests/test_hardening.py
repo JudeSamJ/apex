@@ -1001,10 +1001,12 @@ def test_sso_connection_setup_and_jit_provisioned_login(db_session):
     no_sso = client.get("/api/sso/login-url", params={"email": "someone@unknown.example.com"})
     assert no_sso.status_code == 404
 
-    # The configured domain does.
+    # The configured domain does. In mock mode there's no real IdP to
+    # redirect to, so the authorization_url points straight at the
+    # frontend's own callback route with a simulated code already attached.
     login_url = client.get("/api/sso/login-url", params={"email": "newhire@ssoco.example.com"})
     assert login_url.status_code == 200
-    assert "mock-sso.example.com/authorize" in login_url.json()["authorization_url"]
+    assert login_url.json()["authorization_url"].startswith("http://localhost:5173/sso-callback?code=")
 
     # Simulate the IdP round-trip and exchange the code for a real token.
     code = MockSSOClient.simulate_authorization_code(
