@@ -2080,8 +2080,44 @@ export default function App() {
   if (!token || !user) {
     return (
       <div className="login-container">
+        <div className="login-shell">
+          <aside className="login-brand">
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '2.5rem' }}>
+              <CreditCard size={30} color="var(--color-primary)" />
+              <span style={{ fontSize: '1.35rem', fontWeight: 800, fontFamily: 'Outfit', letterSpacing: '0.05em' }}>APEX</span>
+            </div>
+            <h2>Corporate cards and spend, under control.</h2>
+            <p>
+              Issue cards, set the limits they spend within, and see every transaction as it
+              settles &mdash; all from one place.
+            </p>
+            <ul className="login-points">
+              <li>
+                <CreditCard size={18} />
+                <div>
+                  <strong>Virtual and physical cards</strong>
+                  <span>Issue in seconds, freeze just as fast.</span>
+                </div>
+              </li>
+              <li>
+                <Sliders size={18} />
+                <div>
+                  <strong>Limits that hold</strong>
+                  <span>Per-card caps and category rules enforced at the swipe.</span>
+                </div>
+              </li>
+              <li>
+                <TrendingUp size={18} />
+                <div>
+                  <strong>Books that keep up</strong>
+                  <span>Receipts, coding and reconciliation as spend happens.</span>
+                </div>
+              </li>
+            </ul>
+          </aside>
+
         <div className="login-card">
-          <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '2rem', justifyContent: 'center' }}>
+          <div className="login-card-mark">
             <CreditCard size={32} color="var(--color-primary)" />
             <h1 style={{ fontSize: '1.75rem', fontWeight: 800, fontFamily: 'Outfit', letterSpacing: '0.05em' }}>APEX PORTAL</h1>
           </div>
@@ -2294,19 +2330,15 @@ export default function App() {
             <button type="submit" className="btn btn-primary" style={{ width: '100%', marginTop: '0.5rem' }}>
               Sign In
             </button>
-            <div style={{ display: 'flex', gap: '0.5rem' }}>
+            <div className="login-links">
               <button
                 type="button"
-                className="btn btn-secondary"
-                style={{ flex: 1, fontSize: '0.85rem' }}
                 onClick={() => { setShowRegister(true); setErrorMessage(null); }}
               >
                 Create an account
               </button>
               <button
                 type="button"
-                className="btn btn-secondary"
-                style={{ flex: 1, fontSize: '0.85rem' }}
                 onClick={() => { setShowForgotPassword(true); setErrorMessage(null); }}
               >
                 Forgot password?
@@ -2316,14 +2348,14 @@ export default function App() {
           )}
 
           {!mfaChallengeToken && !showRegister && !showForgotPassword && !resetToken && (
-          <div style={{ marginTop: '1.5rem', borderTop: '1px solid var(--border-color)', paddingTop: '1.25rem' }}>
-            <form onSubmit={handleSsoLogin} style={{ display: 'flex', gap: '0.5rem' }}>
+          <div>
+            <div className="login-divider">or</div>
+            <form onSubmit={handleSsoLogin} className="login-sso">
               <input
                 type="email"
                 placeholder="you@company.com"
                 value={ssoEmailInput}
                 onChange={(e) => setSsoEmailInput(e.target.value)}
-                style={{ flex: 1 }}
                 required
               />
               <button type="submit" className="btn btn-secondary" style={{ whiteSpace: 'nowrap' }}>
@@ -2337,33 +2369,34 @@ export default function App() {
           )}
 
           {!mfaChallengeToken && !showRegister && !showForgotPassword && !resetToken && (
-          <div style={{ marginTop: '2rem', borderTop: '1px solid var(--border-color)', paddingTop: '1.5rem' }}>
-            <p style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', marginBottom: '0.75rem', textAlign: 'center' }}>
-              Quick Switch Role Profiles
-            </p>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
-              <button className="btn btn-secondary" style={{ fontSize: '0.8rem', padding: '0.5rem' }} onClick={() => handleQuickLogin('admin@apex.com')}>
-                Alice Admin (Apex Parent)
+          <div>
+            <div className="login-divider">Demo profiles</div>
+            <div className="login-quick">
+              <button className="btn btn-secondary" onClick={() => handleQuickLogin('admin@apex.com')}>
+                <strong>Alice Admin</strong>
+                <span>Apex Parent</span>
               </button>
-              <button className="btn btn-secondary" style={{ fontSize: '0.8rem', padding: '0.5rem' }} onClick={() => handleQuickLogin('manager@apex.com')}>
-                Bob Manager (Apex Engineering)
+              <button className="btn btn-secondary" onClick={() => handleQuickLogin('manager@apex.com')}>
+                <strong>Bob Manager</strong>
+                <span>Apex Engineering</span>
               </button>
-              <button className="btn btn-secondary" style={{ fontSize: '0.8rem', padding: '0.5rem' }} onClick={() => handleQuickLogin('employee@apex.com')}>
-                Charlie Employee (Apex Parent + Child)
+              <button className="btn btn-secondary" onClick={() => handleQuickLogin('employee@apex.com')}>
+                <strong>Charlie Employee</strong>
+                <span>Apex Parent + Child</span>
               </button>
-              <button className="btn btn-secondary" style={{ fontSize: '0.8rem', padding: '0.5rem' }} onClick={() => handleQuickLogin('bookkeeper@apex.com')}>
-                Diane Bookkeeper (Entity Scope Audit)
+              <button className="btn btn-secondary" onClick={() => handleQuickLogin('bookkeeper@apex.com')}>
+                <strong>Diane Bookkeeper</strong>
+                <span>Entity Scope Audit</span>
               </button>
             </div>
 
-            <div style={{ borderTop: '1px solid var(--border-color)', margin: '1.5rem 0', paddingTop: '1rem' }} />
-
-            <button className="btn btn-primary" onClick={handleSeed} style={{ width: '100%' }}>
-              <RefreshCw size={18} className={loading ? "animate-spin" : ""} />
+            <button className="btn btn-secondary" onClick={handleSeed} style={{ width: '100%', marginTop: '0.75rem', fontSize: '0.85rem' }}>
+              <RefreshCw size={16} className={loading ? "animate-spin" : ""} />
               Seed Database with Demo Data
             </button>
           </div>
           )}
+        </div>
         </div>
       </div>
     );

@@ -108,25 +108,212 @@ body {
 /* Login / Auth screen */
 .login-container {
   display: flex;
-  align-items: center;
+  /* Not align-items: center. body is overflow:hidden, so this element is the
+     only scroller; a centred flex child taller than the viewport overflows
+     equally in both directions and the top becomes unreachable — the email
+     field scrolled off and no way to get back to it. flex-start plus auto
+     margins on the child centres it when it fits and scrolls cleanly when
+     it does not. */
+  align-items: flex-start;
   justify-content: center;
   width: 100%;
-  height: 100vh;
+  height: 100dvh;
   overflow-y: auto;
-  padding: 2rem;
+  padding: clamp(1.5rem, 4vw, 3rem);
   background-image:
     radial-gradient(at 0% 0%, rgba(59, 130, 246, 0.08) 0px, transparent 50%),
     radial-gradient(at 100% 100%, rgba(16, 185, 129, 0.05) 0px, transparent 50%);
 }
 
+/* Brand panel beside the form. Wide viewports were handing the form a 420px
+   column in the middle of ~1900px of empty background, which read as broken
+   rather than minimal. */
+.login-shell {
+  margin: auto;
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: clamp(2rem, 4vw, 4rem);
+  align-items: center;
+  width: 100%;
+  max-width: 460px;
+}
+
+@media (min-width: 980px) {
+  .login-shell {
+    grid-template-columns: minmax(0, 1fr) 460px;
+    max-width: 1080px;
+  }
+}
+
+.login-brand {
+  display: none;
+}
+
+@media (min-width: 980px) {
+  .login-brand {
+    display: block;
+  }
+}
+
+.login-brand h2 {
+  font-family: var(--font-display, 'Outfit'), var(--font-sans);
+  font-size: clamp(2rem, 3vw, 2.75rem);
+  font-weight: 800;
+  line-height: 1.15;
+  letter-spacing: -0.02em;
+  margin-bottom: 1rem;
+}
+
+.login-brand p {
+  color: var(--text-secondary);
+  font-size: 1rem;
+  max-width: 42ch;
+  margin-bottom: 2.5rem;
+}
+
+.login-points {
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+  list-style: none;
+}
+
+.login-points li {
+  display: flex;
+  gap: 0.875rem;
+  align-items: flex-start;
+}
+
+.login-points svg {
+  flex-shrink: 0;
+  margin-top: 0.15rem;
+  color: var(--color-primary);
+}
+
+.login-points strong {
+  display: block;
+  font-size: 0.95rem;
+  font-weight: 600;
+  margin-bottom: 0.15rem;
+}
+
+.login-points span {
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+  line-height: 1.5;
+}
+
+/* The card carries the wordmark on its own; alongside the brand panel it is
+   the same logo twice, and the height it costs is what pushed the card past
+   the fold on a laptop viewport. */
+.login-card-mark {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.75rem;
+  margin-bottom: 2rem;
+}
+
+@media (min-width: 980px) {
+  .login-card-mark {
+    display: none;
+  }
+}
+
 .login-card {
   width: 100%;
-  max-width: 420px;
+  max-width: 460px;
   background: var(--bg-card);
   border: 1px solid var(--border-color);
   border-radius: 20px;
-  padding: 2.5rem;
+  padding: clamp(1.75rem, 3vw, 2.5rem);
   box-shadow: var(--shadow-lg);
+}
+
+/* A titled rule between the card's stacked sections, replacing the bare
+   border-top + ad-hoc margins that left the divisions unevenly spaced. */
+.login-divider {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin: 1.5rem 0 1.25rem;
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-tertiary, var(--text-secondary));
+  white-space: nowrap;
+}
+
+.login-divider::before,
+.login-divider::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: var(--border-color);
+}
+
+/* Secondary paths off the form. As full buttons they carried the same visual
+   weight as Sign In and wrapped onto two lines each. */
+.login-links {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-top: 0.25rem;
+}
+
+.login-links button {
+  background: none;
+  border: none;
+  padding: 0;
+  font-family: var(--font-sans);
+  font-size: 0.85rem;
+  font-weight: 500;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: color var(--transition-fast);
+}
+
+.login-links button:hover {
+  color: var(--color-primary);
+}
+
+.login-sso {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.login-sso input {
+  flex: 1;
+  min-width: 0;
+}
+
+/* Two across rather than four stacked — the demo profiles were roughly half
+   the card's height on their own. */
+.login-quick {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.5rem;
+}
+
+.login-quick button {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.15rem;
+  padding: 0.625rem 0.75rem;
+  text-align: left;
+  line-height: 1.3;
+}
+
+.login-quick strong {
+  font-size: 0.8rem;
+  font-weight: 600;
+}
+
+.login-quick span {
+  font-size: 0.7rem;
+  font-weight: 400;
+  color: var(--text-secondary);
 }
 
 /* Glass Card */
