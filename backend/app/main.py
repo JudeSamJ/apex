@@ -2,6 +2,9 @@
 # backend/.env, and app.database resolves DATABASE_URL at import time.
 import app.dotenv_bootstrap  # noqa: F401  (imported for its side effect)
 
+import logging
+import os
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.database import init_db
@@ -32,6 +35,31 @@ from app.fx.router import router as fx_router
 configure_logging()
 init_sentry()
 
+# Browsers refuse a cross-origin response whose Access-Control-Allow-Origin
+# does not name the calling page, and a deployed frontend is never on
+# localhost. Set CORS_ORIGINS to a comma-separated list of exact origins the
+# API should accept, e.g.
+#
+#   CORS_ORIGINS=https://apex-ten-phi.vercel.app
+#
+# Local dev origins stay allowed either way, so setting this in production
+# does not break anyone running the app locally.
+_DEV_ORIGINS = ["http://localhost:5173", "http://127.0.0.1:5173"]
+CORS_ORIGINS = _DEV_ORIGINS + [
+    origin.strip().rstrip("/")
+    for origin in os.getenv("CORS_ORIGINS", "").split(",")
+    if origin.strip()
+]
+
+# Preview deployments get a fresh URL per commit, so they cannot be listed
+# ahead of time. Set CORS_ORIGIN_REGEX to match your own preview hosts, e.g.
+#
+#   CORS_ORIGIN_REGEX=https://apex-[a-z0-9-]+\.vercel\.app
+#
+# Keep it anchored to your project's own prefix. A bare .*\.vercel\.app would
+# let any page on any Vercel account call this API with credentials attached.
+CORS_ORIGIN_REGEX = os.getenv("CORS_ORIGIN_REGEX") or None
+
 app = FastAPI(title="Ramp Clone B2B Fintech Platform API", version="1.0.0")
 
 app.add_middleware(RequestIDMiddleware)
@@ -39,7 +67,8 @@ app.add_middleware(RequestIDMiddleware)
 # CORS middleware configuration
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+    allow_origins=CORS_ORIGINS,
+    allow_origin_regex=CORS_ORIGIN_REGEX,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -51,6 +80,16 @@ app.add_middleware(
 
 @app.on_event("startup")
 def startup_event():
+    # On a serverless host every cold start runs this, so each one would take
+    # an Alembic upgrade check against the database before serving a byte, and
+    # concurrent cold starts race each other. Set RUN_MIGRATIONS_ON_STARTUP
+    # to a false value there and apply migrations as a deploy step instead.
+    if os.getenv("RUN_MIGRATIONS_ON_STARTUP", "true").strip().lower() in ("0", "false", "no"):
+        logging.getLogger(__name__).info(
+            "Skipping startup migrations (RUN_MIGRATIONS_ON_STARTUP is off); "
+            "the database is expected to already be at head."
+        )
+        return
     init_db()
 
 @app.get("/")

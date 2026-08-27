@@ -23,7 +23,11 @@ import {
   Shield
 } from 'lucide-react';
 
-const API_BASE = 'http://localhost:8000';
+// Set VITE_API_BASE at build time to point at a deployed backend; without it
+// this falls back to the local dev server. A Vite build inlines this, so it is
+// baked in when `npm run build` runs — changing it on the host afterwards has
+// no effect, the frontend has to be rebuilt.
+const API_BASE = (import.meta.env.VITE_API_BASE ?? 'http://localhost:8000').replace(/\/$/, '');
 
 // Distinct, accessible colors for per-series chart elements (e.g. one bar
 // per department) — cycled by index so any number of departments still get
