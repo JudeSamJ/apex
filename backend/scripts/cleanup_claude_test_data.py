@@ -49,23 +49,29 @@ TEST_LEDGER_TRANSACTION_IDS = TEST_TRANSACTIONS + [
 ]
 
 # Cards issued while testing the role-based card request routing.
+#
+# Charlie's card (1b1340b5) is deliberately NOT here. A later session put a
+# real transaction on it -- Google Cloud Services $300 on 2026-08-26 -- so it
+# is in use, and removing it would mean removing their transaction and its
+# ledger entries too. It stays, and so does the request and approval that
+# produced it: they are that live card's provenance now, not debris.
 TEST_CARDS = [
-    "52d2b2f1-67ab-4e72-bca7-50b5519a39b7",  # Alice, auto-issued
-    "1b1340b5-f732-42b6-bf69-bb0db8b39763",  # Charlie, manager-approved
-    "d76b9528-4b4a-41c0-aa4e-e75f43d0ed4a",  # Bob, admin-approved
+    "52d2b2f1-67ab-4e72-bca7-50b5519a39b7",  # Alice, auto-issued, never used
+    "d76b9528-4b4a-41c0-aa4e-e75f43d0ed4a",  # Bob, admin-approved, never used
 ]
 
 TEST_CARD_REQUESTS = [
-    "d4084a3a-17a5-4526-8622-d2a015d63274",
-    "b9fd2305-8f5d-40a3-bbdb-ebbc8aa0911d",
-    "3fa10302-e7ac-440f-8521-7cc894bbfccf",
+    "d4084a3a-17a5-4526-8622-d2a015d63274",  # Alice's -> card 52d2b2f1
+    "b9fd2305-8f5d-40a3-bbdb-ebbc8aa0911d",  # Bob's   -> card d76b9528
+    # 3fa10302 (Charlie's) is kept: it produced the card that is now in use.
 ]
 
-# The two "awaiting your approval" notifications those requests fanned out.
-# (The admin's own request auto-approved and notified nobody.)
+# "Awaiting your approval" notifications those requests fanned out. Only
+# Alice's, for Bob's request. Bob's own notification (ca4eec84) belongs to
+# Charlie's request, which is being kept.
+# Alice's request auto-approved under the new routing and notified nobody.
 TEST_NOTIFICATIONS = [
     "3787f863-2338-4319-b505-07000bceff1a",
-    "ca4eec84-eac8-4fb3-9c43-4dbe8921c0fb",
 ]
 
 # The company created while testing the new Ops Center form, its seeded
@@ -147,7 +153,24 @@ def main():
         ids=TEST_TRANSACTIONS)
 
     print("\nCards issued while testing request routing")
-    # Before the cards: transactions.card_id references them.
+    # A card with a transaction on it is in use by someone. Deleting it would
+    # take their transaction with it, so check before touching any of them --
+    # a FK violation mid-transaction aborts the whole run with a stack trace.
+    still_used = db.execute(text("""
+        select t.card_id, count(*), min(t.merchant_name)
+        from transactions t
+        where t.card_id = any(:ids) and t.id != all(:keep)
+        group by t.card_id
+    """), {"ids": TEST_CARDS, "keep": TEST_TRANSACTIONS}).all()
+    if still_used:
+        print("  [abort] these cards have transactions that are not this session's:")
+        for card_id, n, merchant in still_used:
+            print(f"           {card_id}  {n} transaction(s), e.g. {merchant}")
+        print("          Remove them from TEST_CARDS and re-run; do not delete")
+        print("          someone else's transactions to make this pass.")
+        db.rollback()
+        sys.exit(1)
+
     run("cards", "delete from cards where id = any(:ids)", ids=TEST_CARDS)
     run("card_requests", "delete from card_requests where id = any(:ids)",
         ids=TEST_CARD_REQUESTS)
