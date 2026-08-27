@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import loginVideo from '../assets/this_is_my_logo.mp4';
 import {
   CreditCard,
   TrendingUp,
@@ -2080,6 +2081,18 @@ export default function App() {
   if (!token || !user) {
     return (
       <div className="login-container">
+        <video
+          className="login-video"
+          src={loginVideo}
+          autoPlay
+          loop
+          muted
+          playsInline
+          preload="auto"
+          aria-hidden="true"
+          tabIndex={-1}
+        />
+        <div className="login-scrim" aria-hidden="true" />
         <div className="login-shell">
           <aside className="login-brand">
             <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '2.5rem' }}>

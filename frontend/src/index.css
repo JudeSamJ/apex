@@ -107,28 +107,68 @@ body {
 
 /* Login / Auth screen */
 .login-container {
+  position: relative;
   display: flex;
-  /* Not align-items: center. body is overflow:hidden, so this element is the
-     only scroller; a centred flex child taller than the viewport overflows
-     equally in both directions and the top becomes unreachable — the email
-     field scrolled off and no way to get back to it. flex-start plus auto
-     margins on the child centres it when it fits and scrolls cleanly when
-     it does not. */
+  /* Not align-items: center. A centred flex child taller than its container
+     overflows equally in both directions, putting the top of the form above
+     the visible area — that is what cut off the email field. flex-start plus
+     auto margins on the child centres it whenever it fits. */
   align-items: flex-start;
   justify-content: center;
   width: 100%;
   height: 100dvh;
-  overflow-y: auto;
-  padding: clamp(1.5rem, 4vw, 3rem);
+  /* The page itself never scrolls. If a viewport is too short to show the
+     whole card, .login-card scrolls within itself rather than the background
+     video sliding away underneath it. */
+  overflow: hidden;
+  --login-pad: clamp(1.5rem, 4vw, 3rem);
+  padding: var(--login-pad);
+  /* Still painted under the video: it shows through before the first frame
+     decodes, and stands in entirely when the video is suppressed for reduced
+     motion or fails to load. */
+  background-color: var(--bg-main);
   background-image:
     radial-gradient(at 0% 0%, rgba(59, 130, 246, 0.08) 0px, transparent 50%),
     radial-gradient(at 100% 100%, rgba(16, 185, 129, 0.05) 0px, transparent 50%);
+}
+
+/* Background video: covers the viewport at any aspect ratio, cropping rather
+   than letterboxing or stretching. */
+.login-video {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  pointer-events: none;
+}
+
+/* Without this the form sits directly on moving footage and the labels become
+   unreadable each time a light frame passes. Weighted toward the right, where
+   the card is on wide viewports. */
+.login-scrim {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+  background:
+    linear-gradient(90deg, rgba(10, 11, 13, 0.55) 0%, rgba(10, 11, 13, 0.35) 45%, rgba(10, 11, 13, 0.7) 100%),
+    radial-gradient(at 100% 50%, rgba(10, 11, 13, 0.35) 0px, transparent 65%);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .login-video {
+    display: none;
+  }
 }
 
 /* Brand panel beside the form. Wide viewports were handing the form a 420px
    column in the middle of ~1900px of empty background, which read as broken
    rather than minimal. */
 .login-shell {
+  position: relative;
+  z-index: 2;
   margin: auto;
   display: grid;
   grid-template-columns: 1fr;
@@ -136,6 +176,8 @@ body {
   align-items: center;
   width: 100%;
   max-width: 460px;
+  max-height: 100%;
+  min-height: 0;
 }
 
 @media (min-width: 980px) {
@@ -147,6 +189,9 @@ body {
 
 .login-brand {
   display: none;
+  min-height: 0;
+  max-height: calc(100dvh - 2 * var(--login-pad));
+  overflow: hidden;
 }
 
 @media (min-width: 980px) {
@@ -223,11 +268,25 @@ body {
 .login-card {
   width: 100%;
   max-width: 460px;
-  background: var(--bg-card);
+  /* Slightly translucent with a blur, so the video reads as being behind the
+     card rather than abruptly stopping at its edge. */
+  background: rgba(17, 19, 23, 0.82);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
   border: 1px solid var(--border-color);
   border-radius: 20px;
   padding: clamp(1.75rem, 3vw, 2.5rem);
   box-shadow: var(--shadow-lg);
+  /* The last resort when a viewport cannot fit the card: scroll here, not the
+     page, so nothing is unreachable even though the page itself is locked.
+     Measured off the viewport, not the parent — a percentage max-height only
+     resolves against an ancestor with a definite height, and every ancestor
+     here is sized by its own max-height or content, so 100% would compute to
+     none and the card would overflow the locked page unreachably. */
+  max-height: calc(100dvh - 2 * var(--login-pad));
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
 /* A titled rule between the card's stacked sections, replacing the bare
