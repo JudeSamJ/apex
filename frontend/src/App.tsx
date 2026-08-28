@@ -20,7 +20,8 @@ import {
   Sliders,
   Settings,
   Bell,
-  Shield
+  Shield,
+  Menu
 } from 'lucide-react';
 
 // Empty by default, so every call below is same-origin: /api/... is served by
@@ -461,6 +462,18 @@ export default function App() {
 
   // Tab control
   const [activeTab, setActiveTab] = useState<'dashboard' | 'cards' | 'bills' | 'reimbursements' | 'transactions' | 'approvals' | 'accounting' | 'insights' | 'ops' | 'settings'>('dashboard');
+
+  // Mobile nav: the sidebar is an off-canvas drawer below the desktop
+  // breakpoint, closed by default so it doesn't cover the page on load.
+  const [mobileNavOpen, setMobileNavOpen] = useState<boolean>(false);
+
+  // Switching tabs (from a mobile nav click) should close the drawer;
+  // switching to desktop width should always leave it closed too, since the
+  // CSS makes the sidebar static there regardless of this flag.
+  const goToTab = (tab: typeof activeTab) => {
+    setActiveTab(tab);
+    setMobileNavOpen(false);
+  };
 
   const [emailInput, setEmailInput] = useState<string>('employee@apex.com');
   const [passwordInput, setPasswordInput] = useState<string>('password123');
@@ -2492,19 +2505,53 @@ export default function App() {
 
   return (
     <div className="app-container">
+      {/* Mobile-only top bar: hamburger opens the off-canvas sidebar below the
+          desktop breakpoint, where the sidebar is hidden by default. */}
+      <div className="mobile-topbar">
+        <button
+          className="mobile-topbar-toggle"
+          onClick={() => setMobileNavOpen(true)}
+          aria-label="Open navigation"
+        >
+          <Menu size={22} />
+        </button>
+        <div className="mobile-topbar-brand">
+          <CreditCard size={20} color="var(--color-primary)" />
+          <span>APEX</span>
+        </div>
+      </div>
+
+      {/* Backdrop behind the open mobile drawer; tapping it (or a nav item)
+          closes the drawer. Desktop CSS keeps this out of the layout. */}
+      {mobileNavOpen && (
+        <div className="app-sidebar-backdrop" onClick={() => setMobileNavOpen(false)} aria-hidden="true" />
+      )}
+
       {/* Sidebar Navigation */}
-      <div className="app-sidebar" style={{ width: '260px', borderRight: '1px solid var(--border-color)', background: '#0e1014', padding: '1.5rem', display: 'flex', flexDirection: 'column', justifyContent: 'space-between' }}>
+      <div
+        className={`app-sidebar ${mobileNavOpen ? 'app-sidebar-open' : ''}`}
+        style={{ width: '260px', borderRight: '1px solid var(--border-color)', background: '#0e1014', padding: '1.5rem', display: 'flex', flexDirection: 'column', justifyContent: 'space-between' }}
+      >
         <div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '2.5rem' }}>
-            <CreditCard size={28} color="var(--color-primary)" />
-            <span style={{ fontFamily: 'Outfit', fontWeight: 800, fontSize: '1.25rem', letterSpacing: '0.05em' }}>APEX</span>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '2.5rem' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+              <CreditCard size={28} color="var(--color-primary)" />
+              <span style={{ fontFamily: 'Outfit', fontWeight: 800, fontSize: '1.25rem', letterSpacing: '0.05em' }}>APEX</span>
+            </div>
+            <button
+              className="mobile-sidebar-close"
+              onClick={() => setMobileNavOpen(false)}
+              aria-label="Close navigation"
+            >
+              <X size={20} />
+            </button>
           </div>
 
           <nav style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
             <button 
               className={`btn ${activeTab === 'dashboard' ? 'btn-primary' : 'btn-secondary'}`} 
               style={{ justifyContent: 'flex-start', width: '100%' }}
-              onClick={() => setActiveTab('dashboard')}
+              onClick={() => goToTab('dashboard')}
             >
               <TrendingUp size={18} />
               <span>Dashboard</span>
@@ -2513,7 +2560,7 @@ export default function App() {
             <button 
               className={`btn ${activeTab === 'cards' ? 'btn-primary' : 'btn-secondary'}`} 
               style={{ justifyContent: 'flex-start', width: '100%' }}
-              onClick={() => setActiveTab('cards')}
+              onClick={() => goToTab('cards')}
             >
               <CreditCard size={18} />
               <span>Cards</span>
@@ -2522,7 +2569,7 @@ export default function App() {
             <button 
               className={`btn ${activeTab === 'bills' ? 'btn-primary' : 'btn-secondary'}`} 
               style={{ justifyContent: 'flex-start', width: '100%' }}
-              onClick={() => setActiveTab('bills')}
+              onClick={() => goToTab('bills')}
             >
               <FileText size={18} />
               <span>Bill Pay</span>
@@ -2531,7 +2578,7 @@ export default function App() {
             <button 
               className={`btn ${activeTab === 'reimbursements' ? 'btn-primary' : 'btn-secondary'}`} 
               style={{ justifyContent: 'flex-start', width: '100%' }}
-              onClick={() => setActiveTab('reimbursements')}
+              onClick={() => goToTab('reimbursements')}
             >
               <Receipt size={18} />
               <span>Reimburse</span>
@@ -2540,7 +2587,7 @@ export default function App() {
             <button 
               className={`btn ${activeTab === 'accounting' ? 'btn-primary' : 'btn-secondary'}`} 
               style={{ justifyContent: 'flex-start', width: '100%' }}
-              onClick={() => setActiveTab('accounting')}
+              onClick={() => goToTab('accounting')}
             >
               <Database size={18} />
               <span>Accounting</span>
@@ -2549,7 +2596,7 @@ export default function App() {
             <button 
               className={`btn ${activeTab === 'insights' ? 'btn-primary' : 'btn-secondary'}`} 
               style={{ justifyContent: 'flex-start', width: '100%', position: 'relative' }}
-              onClick={() => setActiveTab('insights')}
+              onClick={() => goToTab('insights')}
             >
               <Sliders size={18} />
               <span>Insights</span>
@@ -2563,7 +2610,7 @@ export default function App() {
             <button 
               className={`btn ${activeTab === 'transactions' ? 'btn-primary' : 'btn-secondary'}`} 
               style={{ justifyContent: 'flex-start', width: '100%' }}
-              onClick={() => setActiveTab('transactions')}
+              onClick={() => goToTab('transactions')}
             >
               <Layers size={18} />
               <span>Card Swipe</span>
@@ -2573,7 +2620,7 @@ export default function App() {
               <button 
                 className={`btn ${activeTab === 'approvals' ? 'btn-primary' : 'btn-secondary'}`} 
                 style={{ justifyContent: 'flex-start', width: '100%', position: 'relative' }}
-                onClick={() => setActiveTab('approvals')}
+                onClick={() => goToTab('approvals')}
               >
                 <CheckSquare size={18} />
                 <span>Approvals</span>
@@ -2589,7 +2636,7 @@ export default function App() {
               <button
                 className={`btn ${activeTab === 'ops' ? 'btn-primary' : 'btn-secondary'}`}
                 style={{ justifyContent: 'flex-start', width: '100%', position: 'relative' }}
-                onClick={() => setActiveTab('ops')}
+                onClick={() => goToTab('ops')}
               >
                 <Shield size={18} />
                 <span>Ops Center</span>
@@ -2604,7 +2651,7 @@ export default function App() {
             <button
               className={`btn ${activeTab === 'settings' ? 'btn-primary' : 'btn-secondary'}`}
               style={{ justifyContent: 'flex-start', width: '100%' }}
-              onClick={() => setActiveTab('settings')}
+              onClick={() => goToTab('settings')}
             >
               <Settings size={18} />
               <span>Settings</span>
@@ -2687,7 +2734,7 @@ export default function App() {
       <div className="main-content">
         {/* Banner if Onboarding Status is not APPROVED */}
         {activeEntity && activeEntity.onboarding_status !== 'APPROVED' && (
-          <div style={{ background: 'var(--color-danger-glow)', border: '1px solid rgba(239,68,68,0.2)', padding: '1rem', borderRadius: '12px', color: 'var(--color-danger)', display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '2rem' }}>
+          <div style={{ background: 'var(--color-danger-glow)', border: '1px solid rgba(239,68,68,0.2)', padding: '1rem', borderRadius: '12px', color: 'var(--color-danger)', display: 'flex', flexWrap: 'wrap', gap: '0.75rem', justifyContent: 'space-between', alignItems: 'center', marginBottom: '2rem' }}>
             <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'center' }}>
               <AlertTriangle size={24} />
               <div>
@@ -2704,7 +2751,7 @@ export default function App() {
         )}
 
         {activeEntity && activeEntity.onboarding_status === 'APPROVED' && (
-          <div style={{ background: 'var(--color-success-glow)', border: '1px solid rgba(16,185,129,0.2)', padding: '1rem', borderRadius: '12px', color: 'var(--color-success)', display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '2rem' }}>
+          <div style={{ background: 'var(--color-success-glow)', border: '1px solid rgba(16,185,129,0.2)', padding: '1rem', borderRadius: '12px', color: 'var(--color-success)', display: 'flex', flexWrap: 'wrap', gap: '0.75rem', justifyContent: 'space-between', alignItems: 'center', marginBottom: '2rem' }}>
             <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'center' }}>
               <Check size={24} />
               <div>
@@ -2899,7 +2946,7 @@ export default function App() {
 
             {/* Budget vs Actual allocation lists */}
             <div className="card animate-fade-in">
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.5rem' }}>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.75rem', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.5rem' }}>
                 <h3 style={{ fontSize: '1.1rem', fontWeight: 700 }}>Departmental Budget-vs-Actual Audit</h3>
                 {user.roles.includes('ADMIN') && (
                   <button className="btn btn-secondary" style={{ padding: '0.5rem 1rem', fontSize: '0.8rem' }} onClick={() => {
@@ -3886,7 +3933,7 @@ export default function App() {
                   </tbody>
                 </table>
               </div>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '1rem' }}>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.75rem', justifyContent: 'space-between', alignItems: 'center', marginTop: '1rem' }}>
                 <p style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
                   Showing {auditLogs.length} of {auditLogTotalCount} entries
                 </p>
@@ -4058,7 +4105,7 @@ export default function App() {
 
             {/* Transactions table */}
             <div className="card">
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.5rem' }}>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.75rem', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.5rem' }}>
                 <h3 style={{ fontSize: '1.1rem', fontWeight: 700 }}>Real-time Transaction Audit Ledger</h3>
                 <div style={{ display: 'flex', gap: '0.5rem' }}>
                   <button className="btn btn-secondary" style={{ padding: '0.5rem 1rem', display: 'flex', gap: '0.5rem', alignItems: 'center' }} onClick={handleDownloadTransactionsCsv}>
@@ -4122,7 +4169,7 @@ export default function App() {
                                   <p style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>No receipts uploaded for this transaction.</p>
                                 )}
                                 {(receiptsByTxn[tx.id] || []).map(r => (
-                                  <div key={r.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '0.85rem' }}>
+                                  <div key={r.id} style={{ display: 'flex', flexWrap: 'wrap', gap: '0.75rem', justifyContent: 'space-between', alignItems: 'center', fontSize: '0.85rem' }}>
                                     <span>
                                       {r.filename} <span style={{ color: 'var(--text-muted)' }}>({(r.size_bytes / 1024).toFixed(0)} KB, by {r.uploaded_by_name})</span>
                                     </span>
@@ -4151,7 +4198,7 @@ export default function App() {
                   </tbody>
                 </table>
               </div>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '1rem' }}>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.75rem', justifyContent: 'space-between', alignItems: 'center', marginTop: '1rem' }}>
                 <p style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
                   Showing {transactions.length} of {txTotalCount} transactions
                 </p>
@@ -4359,7 +4406,7 @@ export default function App() {
 
             {/* Reconciliation */}
             <div className="card" style={{ marginBottom: '2rem' }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.75rem', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
                 <h3 style={{ fontSize: '1.1rem', fontWeight: 700 }}>Payment-Rail Reconciliation</h3>
                 <button className="btn btn-primary" onClick={handleRunReconciliation}>
                   <RefreshCw size={16} />
@@ -4371,7 +4418,7 @@ export default function App() {
               )}
               {reconciliationRuns.map(run => (
                 <div key={run.id} style={{ borderBottom: '1px solid var(--border-color)', padding: '0.75rem 0' }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.75rem', justifyContent: 'space-between', alignItems: 'center' }}>
                     <div>
                       <span className="badge badge-info" style={{ marginRight: '0.5rem' }}>{run.provider}</span>
                       <span className={`badge ${run.status === 'COMPLETED' ? 'badge-success' : run.status === 'FAILED' ? 'badge-danger' : 'badge-warning'}`}>{run.status}</span>
@@ -4388,7 +4435,7 @@ export default function App() {
                   {reconciliationDiscrepancies[run.id] && reconciliationDiscrepancies[run.id].length > 0 && (
                     <div style={{ marginTop: '0.75rem', display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
                       {reconciliationDiscrepancies[run.id].map(d => (
-                        <div key={d.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: '#0e1014', padding: '0.5rem 0.75rem', borderRadius: '8px' }}>
+                        <div key={d.id} style={{ display: 'flex', flexWrap: 'wrap', gap: '0.75rem', justifyContent: 'space-between', alignItems: 'center', background: '#0e1014', padding: '0.5rem 0.75rem', borderRadius: '8px' }}>
                           <div>
                             <p style={{ fontSize: '0.85rem', fontWeight: 600 }}>{d.subject_type} {d.transfer_ref}</p>
                             <p style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>
@@ -4418,7 +4465,7 @@ export default function App() {
                 <p style={{ color: 'var(--text-secondary)', fontSize: '0.9rem' }}>No screening records.</p>
               )}
               {screenings.map(s => (
-                <div key={s.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid var(--border-color)', padding: '0.5rem 0' }}>
+                <div key={s.id} style={{ display: 'flex', flexWrap: 'wrap', gap: '0.75rem', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid var(--border-color)', padding: '0.5rem 0' }}>
                   <div>
                     <p style={{ fontWeight: 600, fontSize: '0.9rem' }}>{s.subject_name} <span style={{ color: 'var(--text-secondary)', fontWeight: 400 }}>({s.subject_type})</span></p>
                     <p style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>via {s.provider} — {new Date(s.created_at).toLocaleString()}</p>
@@ -4436,7 +4483,7 @@ export default function App() {
               )}
               {disputes.map(d => (
                 <div key={d.id} style={{ borderBottom: '1px solid var(--border-color)', padding: '0.75rem 0' }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.75rem', justifyContent: 'space-between', alignItems: 'center' }}>
                     <div>
                       <p style={{ fontWeight: 600, fontSize: '0.9rem' }}>${d.amount.toFixed(2)} — {d.reason || 'No reason given'}</p>
                       <p style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>{new Date(d.created_at).toLocaleString()}</p>
@@ -4462,7 +4509,7 @@ export default function App() {
 
             {/* 1099-NEC Tax Reporting */}
             <div className="card">
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.75rem', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
                 <h3 style={{ fontSize: '1.1rem', fontWeight: 700 }}>1099-NEC Tax Reporting</h3>
                 <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
                   <select value={necYear} onChange={(e) => setNecYear(Number(e.target.value))} style={{ fontSize: '0.85rem', padding: '0.4rem' }}>
@@ -4532,8 +4579,8 @@ export default function App() {
               {mfaEnabled ? (
                 <>
                   <p style={{ color: 'var(--color-success)', fontSize: '0.9rem', marginBottom: '1rem' }}>MFA is currently enabled on your account.</p>
-                  <form onSubmit={handleMfaDisable} style={{ display: 'flex', gap: '0.5rem' }}>
-                    <input placeholder="Enter code to disable" value={mfaCodeInput} onChange={(e) => setMfaCodeInput(e.target.value)} required />
+                  <form onSubmit={handleMfaDisable} style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem' }}>
+                    <input placeholder="Enter code to disable" value={mfaCodeInput} onChange={(e) => setMfaCodeInput(e.target.value)} required style={{ flex: 1, minWidth: '160px' }} />
                     <button type="submit" className="btn btn-danger">Disable</button>
                   </form>
                 </>
@@ -4544,8 +4591,8 @@ export default function App() {
                   </p>
                   <p style={{ fontFamily: 'monospace', fontSize: '0.85rem', wordBreak: 'break-all', background: '#0e1014', padding: '0.5rem', borderRadius: '6px' }}>{mfaEnrollUrl}</p>
                   <p style={{ fontFamily: 'monospace', fontSize: '0.85rem', marginTop: '0.5rem' }}>Secret: {mfaEnrollSecret}</p>
-                  <form onSubmit={handleMfaConfirm} style={{ display: 'flex', gap: '0.5rem', marginTop: '1rem' }}>
-                    <input placeholder="Enter code to confirm" value={mfaCodeInput} onChange={(e) => setMfaCodeInput(e.target.value)} required />
+                  <form onSubmit={handleMfaConfirm} style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem', marginTop: '1rem' }}>
+                    <input placeholder="Enter code to confirm" value={mfaCodeInput} onChange={(e) => setMfaCodeInput(e.target.value)} required style={{ flex: 1, minWidth: '160px' }} />
                     <button type="submit" className="btn btn-primary">Confirm</button>
                   </form>
                 </>
@@ -4557,15 +4604,15 @@ export default function App() {
             {user.roles.includes('ADMIN') && (
               <div className="card" style={{ maxWidth: '640px' }}>
                 <h3 style={{ fontSize: '1.1rem', fontWeight: 700, marginBottom: '1rem' }}>Single Sign-On (SSO)</h3>
-                <form onSubmit={handleCreateSsoConnection} style={{ display: 'flex', gap: '0.5rem', marginBottom: '1.5rem' }}>
-                  <input placeholder="company-domain.com" value={ssoDomainInput} onChange={(e) => setSsoDomainInput(e.target.value)} style={{ flex: 1 }} required />
+                <form onSubmit={handleCreateSsoConnection} style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem', marginBottom: '1.5rem' }}>
+                  <input placeholder="company-domain.com" value={ssoDomainInput} onChange={(e) => setSsoDomainInput(e.target.value)} style={{ flex: 1, minWidth: '160px' }} required />
                   <button type="submit" className="btn btn-primary">Create Connection</button>
                 </form>
                 {ssoConnections.length === 0 && (
                   <p style={{ color: 'var(--text-secondary)', fontSize: '0.9rem' }}>No SSO connections configured.</p>
                 )}
                 {ssoConnections.map(c => (
-                  <div key={c.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid var(--border-color)', padding: '0.5rem 0' }}>
+                  <div key={c.id} style={{ display: 'flex', flexWrap: 'wrap', gap: '0.75rem', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid var(--border-color)', padding: '0.5rem 0' }}>
                     <div>
                       <p style={{ fontWeight: 600, fontSize: '0.9rem' }}>{c.domain}</p>
                       <p style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>{c.provider}</p>

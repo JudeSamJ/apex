@@ -105,6 +105,110 @@ body {
   overflow-y: auto;
 }
 
+/* Mobile top bar with the nav toggle — hidden on desktop, where the sidebar
+   is always visible in the normal flex flow. */
+.mobile-topbar {
+  display: none;
+}
+
+.mobile-sidebar-close {
+  display: none;
+}
+
+.app-sidebar-backdrop {
+  display: none;
+}
+
+@media (max-width: 900px) {
+  .mobile-topbar {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 56px;
+    padding: 0 1rem;
+    background: #0e1014;
+    border-bottom: 1px solid var(--border-color);
+    z-index: 30;
+  }
+
+  .mobile-topbar-toggle {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 36px;
+    height: 36px;
+    border-radius: 8px;
+    border: 1px solid var(--border-color);
+    background: rgba(255, 255, 255, 0.05);
+    color: var(--text-primary);
+    cursor: pointer;
+  }
+
+  .mobile-topbar-brand {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    font-family: 'Outfit', sans-serif;
+    font-weight: 800;
+    font-size: 1.05rem;
+    letter-spacing: 0.05em;
+  }
+
+  /* The sidebar becomes an off-canvas drawer: fixed over the page, slid out
+     of view by default, and slid in when toggled open. This is what actually
+     fixes the mobile layout — previously the sidebar was a static 260px-wide
+     flex child that ate most of a phone-width viewport and left almost
+     nothing for the page content. */
+  .app-sidebar {
+    position: fixed;
+    top: 0;
+    left: 0;
+    bottom: 0;
+    z-index: 50;
+    width: min(85vw, 300px) !important;
+    transform: translateX(-100%);
+    transition: transform var(--transition-normal);
+    box-shadow: var(--shadow-lg);
+  }
+
+  .app-sidebar.app-sidebar-open {
+    transform: translateX(0);
+  }
+
+  .mobile-sidebar-close {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 32px;
+    height: 32px;
+    border-radius: 8px;
+    border: 1px solid var(--border-color);
+    background: rgba(255, 255, 255, 0.05);
+    color: var(--text-primary);
+    cursor: pointer;
+  }
+
+  .app-sidebar-backdrop {
+    display: block;
+    position: fixed;
+    inset: 0;
+    z-index: 40;
+    background: rgba(0, 0, 0, 0.5);
+  }
+
+  /* Room for the fixed top bar, and no more centered max-width column eating
+     padding meant for a much wider screen. */
+  .main-content {
+    height: 100vh;
+    padding: calc(56px + 1rem) 1rem 1rem;
+    max-width: 100%;
+  }
+}
+
 /* Login / Auth screen */
 .login-container {
   position: relative;
