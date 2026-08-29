@@ -747,3 +747,75 @@ label {
   letter-spacing: 0.1em;
   color: #fff;
 }
+
+/* Sidebar nav hover hints — a small "what/why/how" reference popup for each
+   feature, so a first-time user (or anyone who forgot) doesn't need a
+   separate manual open to understand what a nav item does. */
+.nav-hint-wrap {
+  position: relative;
+}
+
+.nav-hint-popup {
+  position: fixed;
+  z-index: 60;
+  width: 280px;
+  padding: 1rem;
+  background: var(--bg-card);
+  border: 1px solid var(--border-color-hover);
+  border-radius: 12px;
+  box-shadow: var(--shadow-lg);
+  pointer-events: none;
+  animation: navHintIn 0.15s ease-out;
+}
+
+@keyframes navHintIn {
+  from { opacity: 0; transform: translateX(-6px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+
+/* Small triangle pointing back at the nav item it describes. */
+.nav-hint-popup::before {
+  content: '';
+  position: absolute;
+  top: 14px;
+  left: -6px;
+  width: 12px;
+  height: 12px;
+  background: var(--bg-card);
+  border-left: 1px solid var(--border-color-hover);
+  border-bottom: 1px solid var(--border-color-hover);
+  transform: rotate(45deg);
+}
+
+.nav-hint-title {
+  font-weight: 700;
+  font-size: 0.9rem;
+  margin-bottom: 0.5rem;
+  color: var(--text-primary);
+}
+
+.nav-hint-line {
+  font-size: 0.8rem;
+  line-height: 1.5;
+  color: var(--text-secondary);
+  margin-bottom: 0.4rem;
+}
+
+.nav-hint-line:last-child {
+  margin-bottom: 0;
+}
+
+.nav-hint-line strong {
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+/* Hover is a mouse-only affordance and there's no room for a 280px flyout
+   next to an off-canvas drawer on a phone-width screen — the mobile sidebar
+   already suppresses hover entirely (touch has no hover state), so this is
+   a belt-and-suspenders hide for any device that still fires the events. */
+@media (max-width: 900px) {
+  .nav-hint-popup {
+    display: none;
+  }
+}

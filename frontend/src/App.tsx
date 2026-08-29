@@ -1,4 +1,5 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef, useLayoutEffect } from 'react';
+import { createPortal } from 'react-dom';
 import loginVideo from '../assets/this_is_my_logo.mp4';
 import {
   CreditCard,
@@ -362,6 +363,113 @@ interface AdminKPIs {
   money_saved: number;
   compliance_score: number;
   avg_approval_turnaround_hours: number;
+}
+
+// Reference copy for the sidebar hover hints — one first-time explanation per
+// feature (what it is, why it exists, how to use it), so a new user doesn't
+// need a separate manual to understand what they're looking at.
+const NAV_HINTS: Record<string, { title: string; why: string; how: string }> = {
+  dashboard: {
+    title: 'Dashboard',
+    why: 'A real-time pulse on company spend — totals, trend, and the department breakdown — without digging through individual transactions.',
+    how: 'Start here each session. If a number looks off, drill in via Card Swipe (transaction detail) or Insights (anomalies).',
+  },
+  cards: {
+    title: 'Cards',
+    why: 'Issues virtual and physical corporate cards under admin-defined spend programs, so employees stop paying out of pocket and waiting on reimbursement.',
+    how: 'Create a spend program (a limit + rules), request a card against it, then freeze or adjust its controls any time.',
+  },
+  bills: {
+    title: 'Bill Pay',
+    why: 'Centralizes accounts payable so vendor invoices are approved and paid on record, instead of over email or spreadsheets.',
+    how: 'Add a vendor, create a bill against it, route it through approvals, then mark it paid once the transfer settles.',
+  },
+  reimbursements: {
+    title: 'Reimburse',
+    why: 'Covers spend that did not go through a company card — mileage, travel booked personally — while still coding it to the right GL account.',
+    how: 'Submit a claim with a receipt and department, get manager approval, then track it through to payout.',
+  },
+  accounting: {
+    title: 'Accounting',
+    why: 'Every transaction needs to land on a GL account for your books; this is where that mapping is defined once instead of coded by hand each time.',
+    how: 'Add GL accounts (your chart of accounts), set auto-coding rules by merchant category/vendor/department, then watch the ERP sync queue push settled activity out.',
+  },
+  insights: {
+    title: 'Insights',
+    why: 'Surfaces duplicate subscriptions, waste, and unusual spend automatically, so finance is not manually auditing every line.',
+    how: 'Run a spend leakage audit, then review each flagged item — confirm real savings or dismiss a false positive.',
+  },
+  transactions: {
+    title: 'Card Swipe',
+    why: 'The live transaction ledger, plus a swipe simulator for testing spend controls (limits, MCC rules) before real cards go out.',
+    how: 'Simulate a swipe against an issued card to see a control in action, or export the real ledger to CSV for review.',
+  },
+  approvals: {
+    title: 'Approvals',
+    why: 'Keeps spend inside policy by routing card requests, bills, and reimbursements through the right approver before money moves.',
+    how: 'Open each item to see its context (amount, requester, reason), then approve or reject it.',
+  },
+  ops: {
+    title: 'Ops Center',
+    why: 'One control tower for admins — disputes, sanctions screening, reconciliation, user approvals, and company onboarding — instead of scattered admin screens.',
+    how: 'Scan the KPI tiles for anything non-zero, then work that queue down (e.g. approve a pending user, resolve a reconciliation gap).',
+  },
+  settings: {
+    title: 'Settings',
+    why: 'Protects the account itself: MFA and enterprise SSO reduce the risk of a single compromised password exposing company spend.',
+    how: 'Enable MFA on your own login here; admins can also connect their company’s SSO so employees sign in with their existing work identity.',
+  },
+};
+
+// Wraps a sidebar nav button with a hover/focus-triggered explainer popup —
+// what the feature is, why it exists, and how to use it. Keyboard-focusable
+// via the wrapped button, so it also works for keyboard/screen-reader users,
+// not just mouse hover.
+//
+// Rendered through a portal into document.body, positioned from the nav
+// item's own bounding rect: the sidebar scrolls (overflow-y: auto), and per
+// spec that forces its overflow-x to clip too, so a popup absolutely
+// positioned *inside* the sidebar and flown out to the right would be cut
+// off at the sidebar's edge — invisible despite being in the DOM. Portaling
+// it out to body and positioning with fixed coordinates sidesteps that.
+function NavHint({ hintKey, children }: { hintKey: keyof typeof NAV_HINTS; children: React.ReactNode }) {
+  const [coords, setCoords] = useState<{ top: number; left: number } | null>(null);
+  const wrapRef = useRef<HTMLDivElement>(null);
+  const popupRef = useRef<HTMLDivElement>(null);
+  const hint = NAV_HINTS[hintKey];
+
+  const show = () => {
+    const rect = wrapRef.current?.getBoundingClientRect();
+    if (rect) setCoords({ top: rect.top, left: rect.right + 12 });
+  };
+  const hide = () => setCoords(null);
+
+  // Clamp after the real popup height is known — a nav item near the bottom
+  // of the sidebar would otherwise flow its popup off the bottom of a short
+  // viewport, since it's initially placed level with the hovered item.
+  useLayoutEffect(() => {
+    if (!coords || !popupRef.current) return;
+    const rect = popupRef.current.getBoundingClientRect();
+    const overflow = rect.bottom - (window.innerHeight - 12);
+    if (overflow > 0) {
+      setCoords(c => (c ? { ...c, top: Math.max(12, c.top - overflow) } : c));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [coords?.top === undefined]);
+
+  return (
+    <div ref={wrapRef} className="nav-hint-wrap" onMouseEnter={show} onMouseLeave={hide} onFocus={show} onBlur={hide}>
+      {children}
+      {coords && createPortal(
+        <div ref={popupRef} className="nav-hint-popup" role="tooltip" style={{ top: coords.top, left: coords.left }}>
+          <p className="nav-hint-title">{hint.title}</p>
+          <p className="nav-hint-line"><strong>Why:</strong> {hint.why}</p>
+          <p className="nav-hint-line"><strong>How to use:</strong> {hint.how}</p>
+        </div>,
+        document.body
+      )}
+    </div>
+  );
 }
 
 export default function App() {
@@ -2548,114 +2656,134 @@ export default function App() {
           </div>
 
           <nav style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
-            <button 
-              className={`btn ${activeTab === 'dashboard' ? 'btn-primary' : 'btn-secondary'}`} 
-              style={{ justifyContent: 'flex-start', width: '100%' }}
-              onClick={() => goToTab('dashboard')}
-            >
-              <TrendingUp size={18} />
-              <span>Dashboard</span>
-            </button>
-
-            <button 
-              className={`btn ${activeTab === 'cards' ? 'btn-primary' : 'btn-secondary'}`} 
-              style={{ justifyContent: 'flex-start', width: '100%' }}
-              onClick={() => goToTab('cards')}
-            >
-              <CreditCard size={18} />
-              <span>Cards</span>
-            </button>
-
-            <button 
-              className={`btn ${activeTab === 'bills' ? 'btn-primary' : 'btn-secondary'}`} 
-              style={{ justifyContent: 'flex-start', width: '100%' }}
-              onClick={() => goToTab('bills')}
-            >
-              <FileText size={18} />
-              <span>Bill Pay</span>
-            </button>
-
-            <button 
-              className={`btn ${activeTab === 'reimbursements' ? 'btn-primary' : 'btn-secondary'}`} 
-              style={{ justifyContent: 'flex-start', width: '100%' }}
-              onClick={() => goToTab('reimbursements')}
-            >
-              <Receipt size={18} />
-              <span>Reimburse</span>
-            </button>
-
-            <button 
-              className={`btn ${activeTab === 'accounting' ? 'btn-primary' : 'btn-secondary'}`} 
-              style={{ justifyContent: 'flex-start', width: '100%' }}
-              onClick={() => goToTab('accounting')}
-            >
-              <Database size={18} />
-              <span>Accounting</span>
-            </button>
-
-            <button 
-              className={`btn ${activeTab === 'insights' ? 'btn-primary' : 'btn-secondary'}`} 
-              style={{ justifyContent: 'flex-start', width: '100%', position: 'relative' }}
-              onClick={() => goToTab('insights')}
-            >
-              <Sliders size={18} />
-              <span>Insights</span>
-              {insights.filter(i => i.status === 'OPEN').length > 0 && (
-                <span className="badge badge-danger" style={{ position: 'absolute', right: '12px', fontSize: '0.7rem' }}>
-                  {insights.filter(i => i.status === 'OPEN').length}
-                </span>
-              )}
-            </button>
-
-            <button 
-              className={`btn ${activeTab === 'transactions' ? 'btn-primary' : 'btn-secondary'}`} 
-              style={{ justifyContent: 'flex-start', width: '100%' }}
-              onClick={() => goToTab('transactions')}
-            >
-              <Layers size={18} />
-              <span>Card Swipe</span>
-            </button>
-
-            {(user.roles.includes('MANAGER') || user.roles.includes('ADMIN')) && (
-              <button 
-                className={`btn ${activeTab === 'approvals' ? 'btn-primary' : 'btn-secondary'}`} 
-                style={{ justifyContent: 'flex-start', width: '100%', position: 'relative' }}
-                onClick={() => goToTab('approvals')}
+            <NavHint hintKey="dashboard">
+              <button
+                className={`btn ${activeTab === 'dashboard' ? 'btn-primary' : 'btn-secondary'}`}
+                style={{ justifyContent: 'flex-start', width: '100%' }}
+                onClick={() => goToTab('dashboard')}
               >
-                <CheckSquare size={18} />
-                <span>Approvals</span>
-                {approvalSteps.length > 0 && (
-                  <span className="badge badge-warning" style={{ position: 'absolute', right: '12px', fontSize: '0.7rem' }}>
-                    {approvalSteps.length}
+                <TrendingUp size={18} />
+                <span>Dashboard</span>
+              </button>
+            </NavHint>
+
+            <NavHint hintKey="cards">
+              <button
+                className={`btn ${activeTab === 'cards' ? 'btn-primary' : 'btn-secondary'}`}
+                style={{ justifyContent: 'flex-start', width: '100%' }}
+                onClick={() => goToTab('cards')}
+              >
+                <CreditCard size={18} />
+                <span>Cards</span>
+              </button>
+            </NavHint>
+
+            <NavHint hintKey="bills">
+              <button
+                className={`btn ${activeTab === 'bills' ? 'btn-primary' : 'btn-secondary'}`}
+                style={{ justifyContent: 'flex-start', width: '100%' }}
+                onClick={() => goToTab('bills')}
+              >
+                <FileText size={18} />
+                <span>Bill Pay</span>
+              </button>
+            </NavHint>
+
+            <NavHint hintKey="reimbursements">
+              <button
+                className={`btn ${activeTab === 'reimbursements' ? 'btn-primary' : 'btn-secondary'}`}
+                style={{ justifyContent: 'flex-start', width: '100%' }}
+                onClick={() => goToTab('reimbursements')}
+              >
+                <Receipt size={18} />
+                <span>Reimburse</span>
+              </button>
+            </NavHint>
+
+            <NavHint hintKey="accounting">
+              <button
+                className={`btn ${activeTab === 'accounting' ? 'btn-primary' : 'btn-secondary'}`}
+                style={{ justifyContent: 'flex-start', width: '100%' }}
+                onClick={() => goToTab('accounting')}
+              >
+                <Database size={18} />
+                <span>Accounting</span>
+              </button>
+            </NavHint>
+
+            <NavHint hintKey="insights">
+              <button
+                className={`btn ${activeTab === 'insights' ? 'btn-primary' : 'btn-secondary'}`}
+                style={{ justifyContent: 'flex-start', width: '100%', position: 'relative' }}
+                onClick={() => goToTab('insights')}
+              >
+                <Sliders size={18} />
+                <span>Insights</span>
+                {insights.filter(i => i.status === 'OPEN').length > 0 && (
+                  <span className="badge badge-danger" style={{ position: 'absolute', right: '12px', fontSize: '0.7rem' }}>
+                    {insights.filter(i => i.status === 'OPEN').length}
                   </span>
                 )}
               </button>
+            </NavHint>
+
+            <NavHint hintKey="transactions">
+              <button
+                className={`btn ${activeTab === 'transactions' ? 'btn-primary' : 'btn-secondary'}`}
+                style={{ justifyContent: 'flex-start', width: '100%' }}
+                onClick={() => goToTab('transactions')}
+              >
+                <Layers size={18} />
+                <span>Card Swipe</span>
+              </button>
+            </NavHint>
+
+            {(user.roles.includes('MANAGER') || user.roles.includes('ADMIN')) && (
+              <NavHint hintKey="approvals">
+                <button
+                  className={`btn ${activeTab === 'approvals' ? 'btn-primary' : 'btn-secondary'}`}
+                  style={{ justifyContent: 'flex-start', width: '100%', position: 'relative' }}
+                  onClick={() => goToTab('approvals')}
+                >
+                  <CheckSquare size={18} />
+                  <span>Approvals</span>
+                  {approvalSteps.length > 0 && (
+                    <span className="badge badge-warning" style={{ position: 'absolute', right: '12px', fontSize: '0.7rem' }}>
+                      {approvalSteps.length}
+                    </span>
+                  )}
+                </button>
+              </NavHint>
             )}
 
             {(user.roles.includes('ADMIN') || user.roles.includes('BOOKKEEPER')) && (
-              <button
-                className={`btn ${activeTab === 'ops' ? 'btn-primary' : 'btn-secondary'}`}
-                style={{ justifyContent: 'flex-start', width: '100%', position: 'relative' }}
-                onClick={() => goToTab('ops')}
-              >
-                <Shield size={18} />
-                <span>Ops Center</span>
-                {(opsSummary && opsSummary.open_disputes + opsSummary.open_reconciliation_discrepancies + pendingUsers.length > 0) && (
-                  <span className="badge badge-danger" style={{ position: 'absolute', right: '12px', fontSize: '0.7rem' }}>
-                    {opsSummary.open_disputes + opsSummary.open_reconciliation_discrepancies + pendingUsers.length}
-                  </span>
-                )}
-              </button>
+              <NavHint hintKey="ops">
+                <button
+                  className={`btn ${activeTab === 'ops' ? 'btn-primary' : 'btn-secondary'}`}
+                  style={{ justifyContent: 'flex-start', width: '100%', position: 'relative' }}
+                  onClick={() => goToTab('ops')}
+                >
+                  <Shield size={18} />
+                  <span>Ops Center</span>
+                  {(opsSummary && opsSummary.open_disputes + opsSummary.open_reconciliation_discrepancies + pendingUsers.length > 0) && (
+                    <span className="badge badge-danger" style={{ position: 'absolute', right: '12px', fontSize: '0.7rem' }}>
+                      {opsSummary.open_disputes + opsSummary.open_reconciliation_discrepancies + pendingUsers.length}
+                    </span>
+                  )}
+                </button>
+              </NavHint>
             )}
 
-            <button
-              className={`btn ${activeTab === 'settings' ? 'btn-primary' : 'btn-secondary'}`}
-              style={{ justifyContent: 'flex-start', width: '100%' }}
-              onClick={() => goToTab('settings')}
-            >
-              <Settings size={18} />
-              <span>Settings</span>
-            </button>
+            <NavHint hintKey="settings">
+              <button
+                className={`btn ${activeTab === 'settings' ? 'btn-primary' : 'btn-secondary'}`}
+                style={{ justifyContent: 'flex-start', width: '100%' }}
+                onClick={() => goToTab('settings')}
+              >
+                <Settings size={18} />
+                <span>Settings</span>
+              </button>
+            </NavHint>
           </nav>
         </div>
 
