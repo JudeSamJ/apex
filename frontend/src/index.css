@@ -699,6 +699,26 @@ label {
   animation: fadeIn var(--transition-normal) forwards;
 }
 
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+.animate-spin {
+  animation: spin 0.8s linear infinite;
+}
+
+/* Loading placeholder blocks (post-login dashboard skeleton) */
+@keyframes skeletonPulse {
+  0%, 100% { opacity: 0.5; }
+  50% { opacity: 0.9; }
+}
+
+.skeleton-block {
+  background: rgba(255, 255, 255, 0.06);
+  border-radius: 6px;
+  animation: skeletonPulse 1.4s ease-in-out infinite;
+}
+
 /* Corporate Card Visual Design */
 .corp-card {
   aspect-ratio: 1.586/1; /* Real credit card aspect ratio */

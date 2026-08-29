@@ -472,6 +472,40 @@ function NavHint({ hintKey, children }: { hintKey: keyof typeof NAV_HINTS; child
   );
 }
 
+// Shown in place of the main panel between a successful sign-in and the
+// first round of dashboard data actually arriving, so there's something on
+// screen other than a blank page while the initial requests are in flight.
+// Shaped like the real Dashboard tab (KPI row + two chart cards) so the
+// swap-in doesn't jolt the layout once real data replaces it.
+function DashboardSkeleton() {
+  return (
+    <div className="animate-fade-in" aria-live="polite" aria-busy="true">
+      <p style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', color: 'var(--text-secondary)', fontSize: '0.85rem', marginBottom: '1.5rem' }}>
+        <RefreshCw size={14} className="animate-spin" />
+        Loading your workspace&hellip;
+      </p>
+      <div className="grid-4" style={{ marginBottom: '1.5rem' }}>
+        {[0, 1, 2, 3].map(i => (
+          <div key={i} className="card">
+            <div className="skeleton-block" style={{ width: '60%', height: '0.8rem', marginBottom: '0.75rem' }} />
+            <div className="skeleton-block" style={{ width: '40%', height: '1.5rem' }} />
+          </div>
+        ))}
+      </div>
+      <div className="grid-2">
+        <div className="card">
+          <div className="skeleton-block" style={{ width: '35%', height: '1rem', marginBottom: '1.5rem' }} />
+          <div className="skeleton-block" style={{ width: '100%', height: '180px' }} />
+        </div>
+        <div className="card">
+          <div className="skeleton-block" style={{ width: '45%', height: '1rem', marginBottom: '1.5rem' }} />
+          <div className="skeleton-block" style={{ width: '100%', height: '180px' }} />
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function App() {
   const [token, setToken] = useState<string | null>(localStorage.getItem('token'));
   const [user, setUser] = useState<UserMe | null>(null);
@@ -672,6 +706,14 @@ export default function App() {
   const [loading, setLoading] = useState<boolean>(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
+
+  // True from a successful sign-in until the handful of requests the first
+  // screen actually needs (entities, departments, dashboard metrics, sidebar
+  // badge counts) have settled — drives the post-login loading overlay.
+  const [initialLoading, setInitialLoading] = useState<boolean>(false);
+  // Shown only if login itself is taking a while — most likely a cold-started
+  // backend (e.g. a serverless host waking up) rather than a hang.
+  const [slowLoginHint, setSlowLoginHint] = useState<boolean>(false);
   
   // Sync error generator override
   const [syncForceError, setSyncForceError] = useState<boolean>(false);
@@ -716,16 +758,43 @@ export default function App() {
   }, [token]);
 
   useEffect(() => {
-    if (user) {
-      fetchEntities();
+    if (!user) return;
+
+    // Priority wave: only what the first screen actually needs — the entity
+    // switcher, the Dashboard tab (the default landing tab), and the sidebar
+    // badge counts (Insights, Approvals, Ops Center, notifications). The
+    // loading overlay is up until these settle, so this list is deliberately
+    // small; everything else was previously fetched in this same eager
+    // batch (~25 concurrent requests on every login) with nothing on screen
+    // to show for it in the meantime.
+    setInitialLoading(true);
+    const priority: Promise<unknown>[] = [
+      fetchEntities(),
+      fetchDepartments(),
+      fetchMetrics(),
+      fetchApprovalsInbox(),
+      fetchInsights(),
+      fetchNotifications(),
+    ];
+    if (user.roles.includes('ADMIN') || user.roles.includes('BOOKKEEPER')) {
+      priority.push(fetchAdminKPIs(), fetchOpsSummary(), fetchBudgetsComparison());
+    }
+    if (user.roles.includes('ADMIN')) {
+      priority.push(fetchPendingUsers());
+    }
+    Promise.allSettled(priority).then(() => setInitialLoading(false));
+
+    // Everything else: real data other tabs need, just not the first paint.
+    // Fired right after the priority wave kicks off (not awaited on it) so
+    // it's ready well before a user could plausibly click over to that tab,
+    // without making it compete with — and slow down — the requests that
+    // actually gate the loading overlay.
+    const deferred = setTimeout(() => {
       fetchPendingEntities();
-      fetchDepartments();
       fetchSpendPrograms();
-      fetchMetrics();
       fetchCards();
       fetchCardRequests();
       fetchTransactions();
-      fetchApprovalsInbox();
       fetchBills();
       fetchVendors();
       fetchReimbursements();
@@ -733,26 +802,21 @@ export default function App() {
       fetchGLMappings();
       fetchSyncQueue();
       fetchCustomFields();
-      fetchInsights();
       fetchTotalSavings();
-      fetchBudgetsComparison();
-      fetchNotifications();
       fetchSupportedCurrencies();
       fetchDisputes();
       fetchScreenings();
       fetchReconciliationRuns();
       if (user.roles.includes('ADMIN') || user.roles.includes('BOOKKEEPER')) {
-        fetchAdminKPIs();
         fetchAuditLogs();
         fetchBackgroundJobs();
-        fetchOpsSummary();
         fetchNecReport();
       }
       if (user.roles.includes('ADMIN')) {
         fetchSsoConnections();
-        fetchPendingUsers();
       }
-    }
+    }, 0);
+    return () => clearTimeout(deferred);
   }, [user, activeEntityId]);
 
   useEffect(() => {
@@ -839,6 +903,11 @@ export default function App() {
     e.preventDefault();
     setLoading(true);
     setErrorMessage(null);
+    setSlowLoginHint(false);
+    // A serverless/free-tier backend can take several seconds to wake from a
+    // cold start; if we're still waiting past a normal-request threshold,
+    // say so instead of leaving the button spinning with no explanation.
+    const slowTimer = setTimeout(() => setSlowLoginHint(true), 3000);
     try {
       const formData = new URLSearchParams();
       formData.append('username', emailInput);
@@ -867,6 +936,8 @@ export default function App() {
     } catch (err: any) {
       setErrorMessage(err.message || 'Login failed');
     } finally {
+      clearTimeout(slowTimer);
+      setSlowLoginHint(false);
       setLoading(false);
     }
   };
@@ -2362,8 +2433,8 @@ export default function App() {
                       minLength={8}
                     />
                   </div>
-                  <button type="submit" className="btn btn-primary" style={{ width: '100%' }}>
-                    Reset Password
+                  <button type="submit" className="btn btn-primary" style={{ width: '100%' }} disabled={loading}>
+                    {loading ? <RefreshCw size={16} className="animate-spin" /> : 'Reset Password'}
                   </button>
                   <button
                     type="button"
@@ -2395,8 +2466,8 @@ export default function App() {
                     <label>Email</label>
                     <input type="email" value={forgotEmail} onChange={(e) => setForgotEmail(e.target.value)} required />
                   </div>
-                  <button type="submit" className="btn btn-primary" style={{ width: '100%' }}>
-                    Send Reset Link
+                  <button type="submit" className="btn btn-primary" style={{ width: '100%' }} disabled={loading}>
+                    {loading ? <RefreshCw size={16} className="animate-spin" /> : 'Send Reset Link'}
                   </button>
                 </>
               )}
@@ -2459,8 +2530,8 @@ export default function App() {
               <p style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>
                 Your account will be created as <strong>pending</strong> — an admin at your company must approve it before you can sign in.
               </p>
-              <button type="submit" className="btn btn-primary" style={{ width: '100%' }}>
-                Submit Registration Request
+              <button type="submit" className="btn btn-primary" style={{ width: '100%' }} disabled={loading}>
+                {loading ? <RefreshCw size={16} className="animate-spin" /> : 'Submit Registration Request'}
               </button>
               <button
                 type="button"
@@ -2493,8 +2564,8 @@ export default function App() {
                   required
                 />
               </div>
-              <button type="submit" className="btn btn-primary" style={{ width: '100%' }}>
-                Verify &amp; Sign In
+              <button type="submit" className="btn btn-primary" style={{ width: '100%' }} disabled={loading}>
+                {loading ? <RefreshCw size={16} className="animate-spin" /> : 'Verify & Sign In'}
               </button>
               <button
                 type="button"
@@ -2534,9 +2605,19 @@ export default function App() {
               />
             </div>
 
-            <button type="submit" className="btn btn-primary" style={{ width: '100%', marginTop: '0.5rem' }}>
-              Sign In
+            <button type="submit" className="btn btn-primary" style={{ width: '100%', marginTop: '0.5rem' }} disabled={loading}>
+              {loading ? (
+                <>
+                  <RefreshCw size={16} className="animate-spin" />
+                  <span>Signing in&hellip;</span>
+                </>
+              ) : 'Sign In'}
             </button>
+            {loading && slowLoginHint && (
+              <p style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', textAlign: 'center', marginTop: '-0.5rem' }}>
+                Still working &mdash; the server may be starting up. This can take a few seconds.
+              </p>
+            )}
             <div className="login-links">
               <button
                 type="button"
@@ -2565,8 +2646,8 @@ export default function App() {
                 onChange={(e) => setSsoEmailInput(e.target.value)}
                 required
               />
-              <button type="submit" className="btn btn-secondary" style={{ whiteSpace: 'nowrap' }}>
-                Sign in with SSO
+              <button type="submit" className="btn btn-secondary" style={{ whiteSpace: 'nowrap' }} disabled={loading}>
+                {loading ? <RefreshCw size={16} className="animate-spin" /> : 'Sign in with SSO'}
               </button>
             </form>
             {ssoLoginError && (
@@ -2860,6 +2941,10 @@ export default function App() {
 
       {/* Main Panel */}
       <div className="main-content">
+      {initialLoading ? (
+        <DashboardSkeleton />
+      ) : (
+        <>
         {/* Banner if Onboarding Status is not APPROVED */}
         {activeEntity && activeEntity.onboarding_status !== 'APPROVED' && (
           <div style={{ background: 'var(--color-danger-glow)', border: '1px solid rgba(239,68,68,0.2)', padding: '1rem', borderRadius: '12px', color: 'var(--color-danger)', display: 'flex', flexWrap: 'wrap', gap: '0.75rem', justifyContent: 'space-between', alignItems: 'center', marginBottom: '2rem' }}>
@@ -4752,6 +4837,8 @@ export default function App() {
             )}
           </div>
         )}
+        </>
+      )}
       </div>
     </div>
   );
